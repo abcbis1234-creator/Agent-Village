@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Agent Village — a gamified local command center for a multi-agent council.">
+  <title>Agent Village — Command Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Agent Village home"><span class="brand-icon"><i></i><i></i><b></b></span><span><strong>AGENT VILLAGE</strong><small>autonomous work, made visible</small></span></a>
+      <div class="view-toggle" role="tablist" aria-label="View mode"><button class="view-tab active" data-view="town" role="tab">Town</button><button class="view-tab" data-view="station" role="tab">Station</button></div>
+      <div class="live-pill"><span></span> agents working <b id="agent-live-count">5</b></div>
+    </header>
+
+    <main>
+      <section class="kpi-bar" aria-label="Village metrics"><div><small>MRR</small><strong id="kpi-mrr">$0</strong></div><div><small>MISSIONS</small><strong id="kpi-missions">0</strong></div><div><small>REPORTS</small><strong id="kpi-reports">0</strong></div><div><small>NEXT WAKE</small><strong id="kpi-wake">ready</strong></div><div class="kpi-spacer"></div><div class="mode-caption" id="mode-caption">Town view / live overview</div></section>
+
+      <section class="world-wrap" id="town-view">
+        <div class="world-hud"><p class="eyebrow">Mission control / 001</p><h1 id="town-title">The village is at rest.</h1><p id="town-subtitle">Assign a mission and watch the council move through the town.</p></div>
+        <aside class="mission-card"><div class="card-kicker">CURRENT MISSION</div><h2 id="mission-card-title">No mission assigned</h2><p id="mission-card-copy">Your agents are waiting at their stations.</p><div class="mission-progress"><span id="mission-progress"></span></div><div class="progress-meta"><span id="mission-progress-label">0% ready</span><span id="mission-round-label">2 rounds</span></div><button class="assign-button" id="open-mission">Assign a mission <b>↗</b></button></aside>
+        <div class="island" aria-label="Interactive agent village">
+          <div class="water-ring"></div><div class="terrain terrain-a"></div><div class="terrain terrain-b"></div><div class="path path-a"></div><div class="path path-b"></div>
+          <button class="building command" data-building="command"><span class="roof"></span><span class="building-body"><b>COMMAND</b><small>Decider</small></span><span class="building-label">Village Hall</span></button>
+          <button class="building research" data-building="research"><span class="roof"></span><span class="building-body"><b>RESEARCH</b><small>Lyra</small></span><span class="building-label">Research Lab</span></button>
+          <button class="building forge" data-building="forge"><span class="roof"></span><span class="building-body"><b>BUILD</b><small>Forge</small></span><span class="building-label">Factory</span></button>
+          <button class="building memory" data-building="memory"><span class="roof"></span><span class="building-body"><b>MEMORY</b><small>Archive</small></span><span class="building-label">Memory Grove</span></button>
+          <div class="agent agent-nova" data-agent="nova"><span class="agent-dot"></span><span>Nova</span><i></i></div><div class="agent agent-atlas" data-agent="atlas"><span class="agent-dot"></span><span>Atlas</span><i></i></div><div class="agent agent-lyra" data-agent="lyra"><span class="agent-dot"></span><span>Lyra</span><i></i></div><div class="agent agent-forge" data-agent="forge"><span class="agent-dot"></span><span>Forge</span><i></i></div><div class="agent agent-echo" data-agent="echo"><span class="agent-dot"></span><span>Echo</span><i></i></div>
+          <div class="task-bubble bubble-one" id="bubble-one">waiting</div><div class="task-bubble bubble-two" id="bubble-two">ready</div><div class="task-bubble bubble-three" id="bubble-three">listening</div>
+        </div>
+        <div class="town-legend"><span><i class="legend-dot working"></i>Working</span><span><i class="legend-dot idle"></i>Idle</span><span><i class="legend-line"></i>Data flow</span></div>
+      </section>
+
+      <section class="station-wrap hidden" id="station-view">
+        <div class="station-header"><div><p class="eyebrow">Station view / orchestration graph</p><h1>Every decision has a trail.</h1><p>Routing, parallel execution, verification, and memory are visible without exposing provider secrets.</p></div><div class="station-stat"><strong id="station-calls">0</strong><small>local calls</small></div><div class="station-stat"><strong id="station-cost">$0.00</strong><small>estimated cost</small></div></div>
+        <div class="station-graph"><div class="graph-node planner"><span>01</span><b>ROUTER</b><small>classify complexity</small></div><div class="graph-line"></div><div class="graph-node workers"><span>02</span><b>WORKERS</b><small>bounded parallel reports</small></div><div class="graph-line"></div><div class="graph-node verifier"><span>03</span><b>VERIFIER</b><small>check the candidate</small></div><div class="graph-line"></div><div class="graph-node decider"><span>04</span><b>DECIDER</b><small>issue final word</small></div></div>
+        <div class="station-columns"><div class="station-panel"><div class="panel-title">Run policy</div><p>Complexity routing is currently represented locally. Future providers belong behind the server boundary; the browser never receives API keys.</p><div class="policy-row"><span>Max workers</span><b>4</b></div><div class="policy-row"><span>Self-consistency</span><b>bounded</b></div><div class="policy-row"><span>Memory</span><b>browser-local</b></div></div><div class="station-panel"><div class="panel-title">Latest trail</div><div id="latest-trail"><p class="muted">Run a mission to populate the orchestration trail.</p></div></div><div class="station-panel"><div class="panel-title">Capability deck</div><div id="capability-list"><p class="muted">Loading local capabilities…</p></div></div></div>
+      </section>
+
+      <section class="output-dock"><div class="dock-head"><div><p class="eyebrow">Mission output</p><h2 id="output-title">No active mission</h2></div><button id="open-history" class="dock-button">History <span id="history-count">0</span></button></div><div class="output-grid"><div class="report-list" id="report-list"><div class="empty-output"><span>+</span><p>Reports will appear here when the village is assigned work.</p></div></div><aside class="decider-panel" id="decider-panel"><div class="panel-title">DECIDER / FINAL WORD</div><p class="muted">The Decider is accountable for the call.</p></aside></div></section>
+    </main>
+    <footer><span>AGENT VILLAGE / PLAIN LOCAL</span><span>Transparent orchestration · no browser-side API keys</span></footer>
+  </div>
+
+  <dialog id="mission-dialog"><form method="dialog" id="mission-form"><button class="dialog-close" value="cancel" aria-label="Close">×</button><p class="eyebrow">New assignment</p><h2>What should the village work on?</h2><p class="dialog-copy">Keep it concrete. The council will route it to a useful mode, then return a bounded deliverable.</p><label for="mission-input">Mission</label><textarea id="mission-input" maxlength="1200" required placeholder="Create a fantasy webnovel about a Roblox builder who discovers a hidden village."></textarea><div class="dialog-row"><label for="capability-input">Capability<select id="capability-input"><option value="auto">Auto route</option><option value="research">Research</option><option value="code">Code &amp; build</option><option value="writing">Writing</option><option value="planning">Planning</option><option value="analysis">Analysis</option><option value="calculator">Calculator</option><option value="data">Data thinking</option><option value="creative">Creative studio</option><option value="webnovel">Webnovel studio</option><option value="video">AI video studio</option><option value="image">Image studio</option><option value="audio">Audio studio</option><option value="website">Web builder</option><option value="automation">Automation lab</option><option value="local_ops">Local Ops</option></select></label><label for="round-input">Rounds<select id="round-input"><option value="1">1 / Rapid</option><option value="2" selected>2 / Deliberate</option><option value="3">3 / Deep review</option></select></label><button class="assign-button" value="default" id="run-mission">Start council <b>↗</b></button></div></form></dialog>
+    <dialog id="building-dialog"><form method="dialog" class="building-dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button><p class="eyebrow" id="building-kicker">Village building</p><h2 id="building-title">Command Center</h2><p id="building-copy">The Decider synthesizes the reports and keeps the final call visible.</p><div id="building-details" class="building-details"></div></form></dialog>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
