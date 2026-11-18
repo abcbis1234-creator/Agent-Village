@@ -12,6 +12,18 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(payload.error || 'Request failed');
   return payload;
 }
+async function updateCacheMetrics() {
+  const pill = $('#cache-pill');
+  if (!pill) return;
+  try {
+    const stats = await api('/api/shorts/cache');
+    pill.textContent = `📦 Cache: ${stats.cachedItemsCount} clips`;
+    pill.title = `Fresh cached clips: ${stats.cachedItemsCount}; stale fallback clips: ${stats.staleItemsCount}; requests this hour: ${stats.requestsLastHour}/${stats.hourlyLimit}; keys: ${stats.keys.join(', ') || 'None'}`;
+  } catch {
+    pill.textContent = '📦 Cache: unavailable';
+    pill.title = 'Pexels cache metrics are currently unavailable';
+  }
+}
 function sceneCard(scene = {}) {
   const card = document.createElement('article');
   card.className = 'repeat-card scene-card';
@@ -146,3 +158,5 @@ $('#prepare-render').addEventListener('click', async () => {
   } catch (error) { message(error.message, true); }
 });
 refreshProjects().then((projects) => { if (projects?.length) loadProject(projects[0].id); else showProject(null); }).catch((error) => message(error.message, true));
+updateCacheMetrics();
+window.setInterval(updateCacheMetrics, 60000);
