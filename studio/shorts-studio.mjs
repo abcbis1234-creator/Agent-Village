@@ -130,6 +130,7 @@ export async function updateShortsProject(id, input) {
     const project = store.projects.find((item) => item.id === id);
     if (!project) return null;
     if (project.status === 'approved') throw new Error('approved projects are locked; create a new revision instead');
+    if (project.status === 'review') throw new Error('projects under review are locked until the reviewer responds');
     Object.assign(project, values);
     if (project.status === 'rejected') project.status = 'draft';
     logEvent(project, 'updated', 'Project content updated');
