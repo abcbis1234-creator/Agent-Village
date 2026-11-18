@@ -96,6 +96,7 @@ function showProject(project) {
   $('#approve-project').disabled = !reviewing;
   $('#reject-project').disabled = !reviewing;
   $('#prepare-render').disabled = !approved;
+  $('#composite-video').disabled = !approved;
   message(project ? `Updated ${new Date(project.updatedAt).toLocaleString()} · ${project.history.length} history events` : 'Save a draft before submitting it for review.');
 }
 async function refreshProjects(selectId = currentProject?.id) {
@@ -139,7 +140,7 @@ async function action(name, note = '') {
     const { project } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/${name}`, { method: 'POST', body: JSON.stringify({ note }) });
     showProject(project);
     await refreshProjects(project.id);
-    message(name === 'submit' ? 'Submitted for human review.' : name === 'approve' ? 'Project approved. Rendering is not connected yet.' : 'Changes requested. Edit the draft and submit again.');
+    message(name === 'submit' ? 'Submitted for human review.' : name === 'approve' ? 'Project approved. Prepare the Toon2D render, then create the final video.' : 'Changes requested. Edit the draft and submit again.');
   } catch (error) { message(error.message, true); }
 }
 $('#project-form').addEventListener('submit', (event) => saveProject(event).catch(() => {}));
@@ -149,6 +150,22 @@ $('#add-source').addEventListener('click', () => $('#source-list').appendChild(s
 $('#submit-review').addEventListener('click', () => action('submit'));
 $('#approve-project').addEventListener('click', () => action('approve', 'Approved by the project owner.'));
 $('#reject-project').addEventListener('click', () => action('reject', 'Changes requested by the reviewer.'));
+$('#composite-video').addEventListener('click', async () => {
+  const button = $('#composite-video');
+  try {
+    const id = $('#project-id').value;
+    if (!id || currentProject?.status !== 'approved') throw new Error('Approve the project before creating its final video.');
+    button.disabled = true;
+    button.textContent = 'Compositing video…';
+    const { composition } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/composite`, { method: 'POST', body: JSON.stringify({}) });
+    message(`Final video created: ${composition.outputPath}. Pexels footage used in ${composition.footageScenes} scene(s); ${composition.fallbackScenes} scene(s) kept their Toon2D backgrounds.`);
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    button.textContent = 'Create final video with Pexels';
+    button.disabled = currentProject?.status !== 'approved';
+  }
+});
 $('#prepare-render').addEventListener('click', async () => {
   try {
     const id = $('#project-id').value;
