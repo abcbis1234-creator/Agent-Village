@@ -4,6 +4,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { handleShortsApi } from './studio/shorts-api.mjs';
 import { listModelProviders, generateWithModel, compareModels } from './studio/model-gateway.mjs';
+import { runCouncil } from './studio/council.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
@@ -104,6 +105,16 @@ function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (await handleShortsApi(req, res, url)) return;
+  if (req.method === 'POST' && url.pathname === '/api/council/run') {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Council is disabled or unauthorized. Configure MODEL_GATE_TOKEN on the server.' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 18000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      return send(res, 200, await runCouncil({ mission: body.mission, assignments: body.assignments }));
+    } catch (error) { return send(res, 400, { error: error.message || 'council run failed' }); }
+  }
   if (req.method === 'GET' && url.pathname === '/api/models/providers') return send(res, 200, { providers: listModelProviders() });
   if (req.method === 'POST' && (url.pathname === '/api/models/generate' || url.pathname === '/api/models/compare')) {
     try {
