@@ -64,7 +64,7 @@ test('Ollama local chat endpoint works without an API key', async () => {
 });
 
 test('hosted providers have no guessed default model IDs', () => {
-  const providers = listModelProviders(env);
+  const providers = listModelProviders({ OPENAI_API_KEY: 'key', ANTHROPIC_API_KEY: 'key', GEMINI_API_KEY: 'key' });
   for (const id of ['openai', 'anthropic', 'gemini']) {
     assert.equal(providers.find((item) => item.id === id).model, '');
   }
