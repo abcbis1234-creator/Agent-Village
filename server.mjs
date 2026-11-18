@@ -121,12 +121,12 @@ const capabilities = [
 
 const keywordRoutes = [
   ['calculator', ['calculate', 'compute', 'what is', 'math', 'percent', 'divide', 'multiply']],
-  ['agentic', ['agent', 'autonomous', 'tool use', 'tool-call', 'workflow agent', 'execute task', 'run task']],
+  ['agentic', ['agent', 'agentic', 'autonomous', 'tool use', 'tool-call', 'tool', 'workflow agent', 'execute task', 'run task', 'approval gates', 'audit trail']],
   ['long_context', ['summarize', 'document', 'codebase', 'large file', 'long text', 'extract from', 'read the file']],
   ['multimodal', ['image and text', 'multimodal', 'vision', 'photo', 'screenshot', 'diagram']],
   ['reasoning', ['reason', 'logic', 'proof', 'step by step', 'chain of thought', 'solve', 'theorem', 'puzzle']],
   ['webnovel', ['webnovel', 'novel', 'chapter', 'fiction', 'serial', 'story arc', 'characters']],
-  ['video', ['video', 'film', 'short', 'reel', 'tiktok', 'youtube', 'shot list', 'storyboard']],
+  ['video', ['video', 'film', 'shorts', 'short-form', 'short video', 'reel', 'tiktok', 'youtube', 'shot list', 'storyboard']],
   ['image', ['image', 'illustration', 'poster', 'logo', 'thumbnail', 'artwork']],
   ['audio', ['audio', 'voiceover', 'voice over', 'podcast', 'music', 'sound effect', 'narration']],
   ['website', ['website', 'web app', 'landing page', 'frontend', 'dashboard', 'site']],
@@ -136,7 +136,7 @@ const keywordRoutes = [
   ['writing', ['write', 'rewrite', 'draft', 'article', 'email', 'copy']],
   ['planning', ['plan', 'roadmap', 'schedule', 'steps', 'organize', 'launch', 'strategy']],
   ['analysis', ['analyze', 'analysis', 'trade-off', 'evaluate', 'should we', 'risk', 'decision']],
-  ['data', ['data', 'dataset', 'csv', 'metrics', 'table', 'database', 'statistics']],
+  ['data', ['data', 'dataset', 'csv', 'metrics', 'table', 'database', 'statistics', 'schema']],
   ['creative', ['idea', 'ideas', 'creative', 'name', 'concept', 'design', 'brainstorm', 'prompt']],
   ['generalist', ['cross-domain', 'open-ended', 'generalist', 'jack of all trades', 'anything', 'general task']],
 ];
@@ -149,10 +149,26 @@ function cleanMission(value) {
   return mission;
 }
 
+function countKeyword(text, word) {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, 'g');
+  const matches = text.match(regex);
+  return matches ? matches.length : 0;
+}
+
 function routeMission(mission, requested = 'auto') {
   if (requested && requested !== 'auto' && capabilities.some((item) => item.key === requested)) return requested;
   const text = mission.toLowerCase();
-  return keywordRoutes.find(([, words]) => words.some((word) => text.includes(word)))?.[0] || 'planning';
+  // Explicit generalist intent wins over single-keyword matches.
+  if (['cross-domain', 'open-ended', 'jack of all trades', 'generalist', 'multi-domain'].some((p) => text.includes(p))) return 'generalist';
+  let best = null;
+  let bestScore = 0;
+  for (const [key, words] of keywordRoutes) {
+    let score = 0;
+    for (const word of words) score += countKeyword(text, word);
+    if (score > bestScore) { bestScore = score; best = key; }
+  }
+  return best || 'planning';
 }
 
 function deliverable(mission, key, info) {
@@ -175,19 +191,19 @@ function deliverable(mission, key, info) {
   return { type: `${key}_brief`, title: `${info.name} deliverable`, sections: sections.map(([name, content]) => ({ name, content })) };
 }
 
-function report(role, mission, key, round) {
+function report(role, key, round) {
   const mode = capabilities.find((item) => item.key === key)?.name || 'General';
   const endings = {
-    nova: `Frame ${mission} as a measurable outcome and keep the first slice narrow.`,
+    nova: 'Frame the mission as a measurable outcome and keep the first slice narrow.',
     atlas: 'Decompose discovery, prototype, validation, and the review gate so the work remains reversible.',
     lyra: 'Name evidence gaps and test the riskiest assumption before polishing the surface.',
     forge: 'Build one happy path, one failure path, and an observable result with boundary validation.',
     echo: 'Challenge hidden scope, unverifiable claims, provider lock-in, and unsafe automation.',
-    generalist: `Tackle ${mission} across domains, keep the first slice visible, and expand only after review.`,
-    reasoning: `Work ${mission} step by step, state assumptions, and self-correct before concluding.`,
-    multimodal: `Combine the media in ${mission} into one coherent brief and flag anything needing human review.`,
-    agentic: `Plan ${mission} with tool boundaries, approval gates, and an audit trail before any execution.`,
-    long_context: `Synthesize ${mission} from the source material and trace every conclusion back to its origin.`,
+    generalist: 'Scan the relevant domains, keep the first slice visible, and expand only after review.',
+    reasoning: 'Work the problem step by step, state assumptions, and self-correct before concluding.',
+    multimodal: 'Combine the media into one coherent brief and flag anything needing human review.',
+    agentic: 'Plan the workflow with tool boundaries, approval gates, and an audit trail before execution.',
+    long_context: 'Synthesize the source material and trace every conclusion back to its origin.',
   };
   return `${mode} route / round ${round}: ${endings[role]}`;
 }
@@ -200,10 +216,20 @@ async function runTask(body) {
   const info = capabilities.find((item) => item.key === key) || capabilities[4];
   const roles = [['nova', 'Nova', 'Planning'], ['atlas', 'Atlas', 'Architecture'], ['lyra', 'Lyra', 'Research'], ['forge', 'Forge', 'Build'], ['echo', 'Echo', 'Critique']];
   const reports = [];
-  for (let round = 1; round <= rounds; round += 1) for (const [role, name, specialty] of roles) reports.push({ role: { key: role, name, specialty }, round, source: 'MANAGED LOCAL DEMO', text: report(role, mission, key, round) });
-  const decision = key === 'webnovel' ? `Start a serialized fiction package for ${mission}: world bible, cast, arc, and chapter one beat sheet.` : key === 'video' ? `Create a production-ready video brief for ${mission}: shots, camera movement, sound, and delivery format.` : key === 'website' ? `Define a buildable website slice for ${mission} with routes, components, and acceptance criteria.` : key === 'generalist' ? `Handle ${mission} as a cross-domain jack-of-all-trades task: scan domains, propose a bounded slice, and synthesize a recommendation.` : key === 'reasoning' ? `Work ${mission} step by step with chain-of-thought, self-correction, and a proof sketch.` : key === 'multimodal' ? `Combine the media in ${mission} into one coherent cross-modal brief with a safety review gate.` : key === 'agentic' ? `Plan ${mission} with tool boundaries, approval gates, and an audit trail before any execution.` : key === 'long_context' ? `Synthesize ${mission} from the source material with traceable citations and a review gate.` : `Proceed with a bounded first slice for ${mission}.`;
+  for (let round = 1; round <= rounds; round += 1) for (const [role, name, specialty] of roles) reports.push({ role: { key: role, name, specialty }, round, source: 'MANAGED LOCAL DEMO', text: report(role, key, round) });
+  const decisionTemplates = {
+    webnovel: `Start a serialized fiction package for "${mission}": world bible, cast, arc, and chapter one beat sheet.`,
+    video: `Create a production-ready video brief for "${mission}": shots, camera movement, sound, and delivery format.`,
+    website: `Define a buildable website slice for "${mission}" with routes, components, and acceptance criteria.`,
+    generalist: `Handle "${mission}" as a cross-domain jack-of-all-trades task: scan domains, propose a bounded slice, and synthesize a recommendation.`,
+    reasoning: `Work through "${mission}" step by step with chain-of-thought, self-correction, and a proof sketch.`,
+    multimodal: `Combine the media in "${mission}" into one coherent cross-modal brief with a safety review gate.`,
+    agentic: `Plan "${mission}" with tool boundaries, approval gates, and an audit trail before any execution.`,
+    long_context: `Synthesize "${mission}" from the source material with traceable citations and a review gate.`,
+  };
+  const decision = decisionTemplates[key] || `Proceed with a bounded first slice for "${mission}".`;
   const confidenceLevels = { generalist: 'high', reasoning: 'high', multimodal: 'medium', agentic: 'medium', long_context: 'medium' };
-  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'calibrated', calibrated: true } };
+  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
