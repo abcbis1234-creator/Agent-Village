@@ -1,10 +1,30 @@
 {
   "name": "agent-village",
   "version": "1.0.0",
+  "description": "Agent Village — a managed local workspace for open-ended AI work. Town, Station, and Workbench views with bounded capability routing and a server-only seam for future providers.",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js"
-  }
+    "check": "node --check server.mjs && node --check public/app.js",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abcbis1234-creator/Agent-Village.git"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "workbench",
+    "orchestration",
+    "local",
+    "demo"
+  ],
+  "author": "Agent Village",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/abcbis1234-creator/Agent-Village/issues"
+  },
+  "homepage": "https://github.com/abcbis1234-creator/Agent-Village#readme"
 }

@@ -1,11 +1,18 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
 const port = Number(process.env.PORT || 3000);
+
+const SECURITY_HEADERS = {
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'"
+};
 
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
@@ -84,6 +91,7 @@ function report(role, mission, key, round) {
 }
 
 async function runTask(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('invalid request body');
   const mission = cleanMission(body.mission);
   const rounds = Math.max(1, Math.min(3, Number.isInteger(body.rounds) ? body.rounds : 2));
   const key = routeMission(mission, body.capability);
@@ -96,10 +104,10 @@ async function runTask(body) {
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
-function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { 'Content-Type': type, 'Content-Length': data.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(data); }
-function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^\.{2,}/, ''); const file = join(publicDir, safe === '/' ? 'index.html' : safe); if (!file.startsWith(publicDir)) return send(res, 403, { error: 'forbidden' }); return readFile(file).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
+function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': data.length }); res.end(data); }
+function staticFile(pathname, res) { const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\//, ''); if (safe.includes('..')) return send(res, 403, { error: 'forbidden' }); const file = resolve(publicDir, safe); if (file !== publicDir && !file.startsWith(publicDir + sep)) return send(res, 403, { error: 'forbidden' }); return stat(file).then((st) => { if (!st.isFile()) return send(res, 404, { error: 'not_found' }); return readFile(file); }).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length });
   if (req.method === 'GET' && url.pathname === '/api/capabilities') return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities });
@@ -111,6 +119,12 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'GET') return staticFile(url.pathname, res);
   return send(res, 404, { error: 'not_found' });
-});
+}
 
-server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
+const server = createServer(handleRequest);
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
+}
+
+export { server, port, publicDir, runTask, capabilities, cleanMission };
