@@ -7,6 +7,7 @@ import {
   submitShortsProject,
   updateShortsProject
 } from './shorts-studio.mjs';
+import { prepareToon2dProject } from './toon2d-adapter.mjs';
 
 function send(res, status, body) {
   const data = Buffer.from(JSON.stringify(body));
@@ -39,7 +40,7 @@ export async function handleShortsApi(req, res, url) {
       return send(res, 201, { project: await createShortsProject(await readBody(req)) }), true;
     }
 
-    const match = url.pathname.match(/^\/api\/shorts\/projects\/([a-f0-9-]+)(?:\/(submit|approve|reject))?$/i);
+    const match = url.pathname.match(/^\/api\/shorts\/projects\/([a-f0-9-]+)(?:\/(submit|approve|reject|prepare-render))?$/i);
     if (!match) {
       send(res, 404, { error: 'shorts_endpoint_not_found' });
       return true;
@@ -58,6 +59,16 @@ export async function handleShortsApi(req, res, url) {
     if (req.method === 'POST' && action) {
       const body = await readBody(req);
       const note = typeof body.note === 'string' ? body.note : '';
+      if (action === 'prepare-render') {
+        const sourceProject = await getShortsProject(id);
+        if (!sourceProject) {
+          send(res, 404, { error: 'project_not_found' });
+          return true;
+        }
+        const preparation = await prepareToon2dProject(sourceProject);
+        send(res, 200, { preparation });
+        return true;
+      }
       const actions = { submit: submitShortsProject, approve: approveShortsProject, reject: rejectShortsProject };
       const project = await actions[action](id, note);
       send(res, project ? 200 : 404, project ? { project } : { error: 'project_not_found' });
