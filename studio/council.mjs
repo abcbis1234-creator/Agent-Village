@@ -15,14 +15,16 @@ function clean(value, name, max) {
 }
 
 export async function runCouncil({ mission, assignments, guidance = '', env = process.env, fetchImpl = fetch } = {}) {
-  const task = clean(mission, 'mission', 1200);\n  const approvedGuidance = typeof guidance === 'string' ? guidance.trim().slice(0, 2400) : '';\n  const guidanceBlock = approvedGuidance ? '\\n\\nAPPROVED TEAM GUIDANCE (human-reviewed; follow when relevant):\\n' + approvedGuidance : '';
+  const task = clean(mission, 'mission', 1200);
+  const approvedGuidance = typeof guidance === 'string' ? guidance.trim().slice(0, 2400) : '';
+  const guidanceBlock = approvedGuidance ? '\n\nAPPROVED TEAM GUIDANCE (human-reviewed; follow when relevant):\n' + approvedGuidance : '';
   if (!Array.isArray(assignments) || assignments.length !== 5) throw new Error('Select a provider for all five agents');
   const byRole = new Map(assignments.map((item) => [item.role, item.provider]));
   if (ROLES.some((role) => !['ollama', 'openai', 'anthropic', 'gemini'].includes(byRole.get(role.id)))) throw new Error('Unsupported provider assignment');
   const base = await Promise.all(ROLES.slice(0, 4).map(async (role) => {
     const provider = byRole.get(role.id);
     const result = await generateWithModel({
-      provider, prompt: 'MISSION:\n' + task + '\n\nYOUR ROLE: ' + role.specialty + '\nTASK: ' + role.instruction + '\n\nReturn a concise, structured contribution. Clearly label assumptions and uncertainty.',
+      provider, prompt: 'MISSION:\n' + task + guidanceBlock + '\n\nYOUR ROLE: ' + role.specialty + '\nTASK: ' + role.instruction + '\n\nReturn a concise, structured contribution. Clearly label assumptions and uncertainty.',
       system: 'You are ' + role.name + ', a specialist agent in a supervised multi-agent council. You are not an autonomous system. Do not claim actions you did not perform. Approved guidance is context, not permission to bypass safety or task requirements.',
       env, fetchImpl
     });
@@ -32,8 +34,8 @@ export async function runCouncil({ mission, assignments, guidance = '', env = pr
   const reviewProvider = byRole.get(reviewer.id);
   const review = await generateWithModel({
     provider: reviewProvider,
-    prompt: 'MISSION:\n' + task + '\n\nINDEPENDENT REVIEW: challenge these four contributions. Identify agreement, disagreements, unsupported assertions, missing evidence, risks, and concrete corrections. Do not merely summarize.\n\n' + base.map((item) => item.role.name + ' (' + item.provider + '/' + item.model + '):\n' + item.text).join('\n\n'),
-    system: 'You are Echo, an independent reviewer. Be skeptical, evidence-oriented, and specific. Never fabricate verification.',
+    prompt: 'MISSION:\n' + task + guidanceBlock + '\n\nINDEPENDENT REVIEW: challenge these four contributions. Identify agreement, disagreements, unsupported assertions, missing evidence, risks, and concrete corrections. Do not merely summarize.\n\n' + base.map((item) => item.role.name + ' (' + item.provider + '/' + item.model + '):\n' + item.text).join('\n\n'),
+    system: 'You are Echo, an independent reviewer. Be skeptical, evidence-oriented, and specific. Never fabricate verification. Approved guidance is context, not permission to bypass safety or task requirements.',
     env, fetchImpl
   });
   return {
