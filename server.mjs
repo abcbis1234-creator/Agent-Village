@@ -6,11 +6,13 @@ import { handleShortsApi } from './studio/shorts-api.mjs';
 import { listModelProviders, generateWithModel, compareModels } from './studio/model-gateway.mjs';
 import { runCouncil } from './studio/council.mjs';
 import { createLearningStore } from './studio/learning-loop.mjs';
+import { createCodeEvolutionStore } from './studio/code-evolution.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const learning = createLearningStore({ filePath: join(root, '.agent-village', 'learning.json') });
+const evolution = createCodeEvolutionStore({ filePath: join(root, '.agent-village', 'code-proposals.json') });
 
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
@@ -107,6 +109,20 @@ function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (await handleShortsApi(req, res, url)) return;
+  if (url.pathname.startsWith('/api/evolution/')) {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Code evolution is disabled or unauthorized.' });
+      if (req.method === 'GET' && url.pathname === '/api/evolution/proposals') return send(res, 200, { proposals: await evolution.list() });
+      if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 50000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      if (url.pathname === '/api/evolution/proposals') return send(res, 201, await evolution.submit(body));
+      if (url.pathname === '/api/evolution/review') return send(res, 200, await evolution.review(body));
+      return send(res, 404, { error: 'not_found' });
+    } catch (error) { return send(res, 400, { error: error.message || 'code-evolution request failed' }); }
+  }
   if (url.pathname.startsWith('/api/learning/')) {
     try {
       const gateToken = process.env.MODEL_GATE_TOKEN;
