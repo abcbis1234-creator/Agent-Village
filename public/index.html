@@ -48,6 +48,22 @@
         </div>
       </section>
 
+      <section class="model-council" id="model-council">
+        <div><p class="eyebrow">Live model council / explicit provider calls</p><h2>Connect the five agents to real models</h2><p class="model-note">Each role makes a real model request. Ollama is local. Hosted providers may cost money. No provider is called until you submit this form.</p></div>
+        <form id="council-form">
+          <label>Mission<textarea id="council-mission" maxlength="1200" required placeholder="Describe the task for the council"></textarea></label>
+          <div class="model-grid">
+            <label>Nova · Planner<select data-role="nova"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Atlas · Architect<select data-role="atlas"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Lyra · Research<select data-role="lyra"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Forge · Builder<select data-role="forge"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Echo · Independent reviewer<select data-role="echo"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+          </div>
+          <label>Server access token<input id="council-token" type="password" autocomplete="off" maxlength="256" placeholder="MODEL_GATE_TOKEN configured by server administrator" required></label>
+          <button class="assign-button" id="run-live-council" type="submit">Run live council ↗</button>
+        </form>
+        <div id="council-results" aria-live="polite"><p class="muted">No live model run yet. Existing demo council remains separate.</p></div>
+      </section>
       <section class="output-dock"><div class="dock-head"><div><p class="eyebrow">Mission output</p><h2 id="output-title">No active mission</h2></div><button id="open-history" class="dock-button">History <span id="history-count">0</span></button></div><div class="output-grid"><div class="report-list" id="report-list"><div class="empty-output"><span>+</span><p>Reports will appear here when the village is assigned work.</p></div></div><aside class="decider-panel" id="decider-panel"><div class="panel-title">DECIDER / FINAL WORD</div><p class="muted">The Decider is accountable for the call.</p></aside></div></section>
     </main>
     <footer><span>AGENT VILLAGE / PLAIN LOCAL</span><span>Transparent orchestration · no browser-side API keys</span></footer>
