@@ -9,10 +9,12 @@ process.env.PEXELS_CACHE_FILE = join(tempDir, 'cache.json');
 process.env.PEXELS_API_KEY = 'test-key';
 let clockOffset = 0;
 let fetchCalls = 0;
+const fetchTimes = [];
 let nextStatus = 200;
 const fakeNow = () => Date.now() + clockOffset;
 const fakeFetch = async () => {
   fetchCalls += 1;
+  fetchTimes.push(Date.now());
   if (nextStatus === 429) return { status: 429, ok: false };
   return {
     status: 200,
@@ -48,6 +50,15 @@ test('caches a Pexels result and deduplicates equivalent queries', async () => {
   assert.equal(fetchCalls, 1);
 });
 
+test('serializes distinct upstream requests at the configured pace', async () => {
+  await service.fetchBackgroundVideo('deep space');
+  await service.fetchBackgroundVideo('blue planet');
+  assert.equal(fetchCalls, 3);
+  assert.ok(fetchTimes[2] - fetchTimes[1] >= 330);
+  const stats = await service.getCacheStats();
+  assert.equal(stats.requestsLastHour, 3);
+});
+
 test('persists cached entries across module reloads', async () => {
   const reloaded = await import(`../studio/pexels-service.mjs?reload=${Date.now()}`);
   reloaded.configurePexelsServiceForTests({ fetch: fakeFetch, now: fakeNow });
@@ -63,7 +74,7 @@ test('serves stale cached footage when Pexels returns HTTP 429', async () => {
   assert.equal(result.videoId, 123);
   assert.equal(fetchCalls, 2);
   const stats = await service.getCacheStats();
-  assert.equal(stats.staleItemsCount, 1);
+  assert.equal(stats.staleItemsCount, 3);
   assert.equal(stats.requestsLastHour, 1);
 });
 
