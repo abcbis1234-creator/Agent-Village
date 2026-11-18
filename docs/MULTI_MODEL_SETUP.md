@@ -1,26 +1,33 @@
-# Multi-model provider setup
+# Free-first multi-model setup
 
-Agent Village includes an optional server-side model gateway for OpenAI, Anthropic Claude, and Google Gemini. Provider calls are explicit user actions; the app does not silently fall back to a paid provider.
+Agent Village supports a local Ollama model plus optional hosted providers. The local provider makes requests to your own machine and does not require an API key or per-token API billing. You still need to download a model, storage space, and hardware capable of running it.
 
-## Environment
+## Free-first default: Ollama
 
-Set only the providers you want to use on the server:
+1. Install Ollama from https://ollama.com/download.
+2. Start Ollama and download a model, for example: `ollama pull llama3.2`.
+3. Start Agent Village on the same computer. The default endpoint is `http://127.0.0.1:11434/api/chat`.
+4. Optional: set `OLLAMA_MODEL` to the exact model tag you downloaded or `OLLAMA_HOST` to your local Ollama API endpoint.
 
-- `OPENAI_API_KEY` and optional `OPENAI_MODEL`
-- `ANTHROPIC_API_KEY` and optional `ANTHROPIC_MODEL`
-- `GEMINI_API_KEY` and optional `GEMINI_MODEL`
-- `MODEL_GATE_TOKEN` (required to enable generation endpoints)
+The default local model name is a starting example; choose a model that fits your computer's memory and performance. No hosted provider is called automatically.
 
-Defaults are configurable in `studio/model-gateway.mjs`. API credentials must never be placed in browser JavaScript, HTML, commits, or screenshots. Hosted API usage can be billed separately from consumer chat subscriptions. Check each provider's current billing and rate limits before enabling it.
+## Optional hosted providers
 
-## API
+- OpenAI / ChatGPT API: `OPENAI_API_KEY`, optional `OPENAI_MODEL`
+- Anthropic / Claude API: `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL`
+- Google Gemini API: `GEMINI_API_KEY`, optional `GEMINI_MODEL`
 
-- `GET /api/models/providers` returns provider names, selected model IDs, and whether a key is configured. It never returns keys.
-- `POST /api/models/generate` body: `{"provider":"openai","prompt":"...","system":"..." }`
-- `POST /api/models/compare` body: `{"providers":["openai","anthropic","gemini"],"prompt":"...","system":"..." }`
+For hosted providers, set a model ID currently supported by that provider. The gateway deliberately does not guess a default model ID. Consumer ChatGPT, Claude, and Gemini free chat plans do not automatically provide API access or API credits. Check each provider's current free-tier availability, limits, and billing before enabling it.
 
-Generation and comparison require the `x-model-token` header to match `MODEL_GATE_TOKEN`. Requests are bounded by prompt length and timeout. Comparison runs only the providers explicitly selected in that request; each may incur API charges.
+## API and security
 
-## Current limits
+- `GET /api/models/providers` reports provider availability and model selection without returning credentials.
+- `POST /api/models/generate` body: `{"provider":"ollama","prompt":"...","system":"..." }`
+- `POST /api/models/compare` body: `{"providers":["ollama","gemini"],"prompt":"...","system":"..." }`
+- Generation endpoints require `MODEL_GATE_TOKEN` and an `x-model-token` header. Set a long random token in the server environment.
 
-This is a provider gateway, not autonomous multi-agent learning. It does not grant ChatGPT subscription access, browser access, or free API credits. It does not persist prompts or model responses. Add application authentication, per-user quotas, durable audit records, and deployment-specific secret management before exposing the server publicly.
+Hosted calls happen only when explicitly selected and configured. Comparison runs only the selected providers, concurrently, and may incur charges for hosted providers. There is no automatic paid fallback. API keys remain server-side.
+
+## Current boundaries
+
+This is a provider gateway, not a fully autonomous team of independent agents. The local and hosted models generate responses when explicitly called; the existing five village roles remain local demo roles until their orchestration is connected to this gateway. Before public deployment, add user authentication, per-user quotas, durable audit logs, and network restrictions for the local Ollama endpoint.
