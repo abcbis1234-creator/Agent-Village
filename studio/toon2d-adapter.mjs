@@ -88,7 +88,7 @@ export function buildToon2dStoryboard(project, wordRows) {
 function runPython(python, engineHome, projectDir, args) {
   const cli = join(engineHome, 't2d.py');
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(python, [cli, ...args, projectDir], {
+    const child = spawn(python, [cli, args[0], projectDir, ...args.slice(1)], {
       cwd: engineHome,
       env: { ...process.env, PYTHONUTF8: '1' },
       stdio: ['ignore', 'pipe', 'pipe']
