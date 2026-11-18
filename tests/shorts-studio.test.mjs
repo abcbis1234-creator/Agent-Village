@@ -6,11 +6,13 @@ import { join } from 'node:path';
 
 let dataDir;
 let studio;
+let toon2d;
 
 before(async () => {
   dataDir = await mkdtemp(join(tmpdir(), 'shorts-studio-test-'));
   process.env.SHORTS_STUDIO_DATA_DIR = dataDir;
   studio = await import('../studio/shorts-studio.mjs');
+  toon2d = await import('../studio/toon2d-adapter.mjs');
 });
 
 after(async () => {
@@ -95,4 +97,40 @@ test('supports requesting changes and returning the project to draft', async () 
   const revised = await studio.updateShortsProject(project.id, { script: 'A clearer explanation of light scattering.' });
   assert.equal(revised.status, 'draft');
   assert.equal(revised.history.at(-1).type, 'updated');
+});
+
+test('builds the original toon2d storyboard schema from scene directions', () => {
+  const script = 'A knight paid the town baker in moon coins.\\nNobody had ever seen one.';
+  const tokens = toon2d.scriptTokens(script);
+  const wordRows = tokens.map((w, i) => ({ w, s: i * 2, e: i * 2 + 0.4, sent: i < 9 ? 0 : 1 }));
+  wordRows[wordRows.length - 1].e = 29.4;
+  const project = {
+    title: 'Moon coins',
+    status: 'approved',
+    script,
+    targetSeconds: 30,
+    scenes: [
+      { narration: 'A knight paid the town baker in moon coins.', set: 'shop_counter', mood: 'day', characterType: 'knight', pose: 'point', expression: 'smug' },
+      { narration: 'Nobody had ever seen one.', set: 'street', mood: 'night', characterType: 'scientist', pose: 'think', expression: 'shocked' }
+    ]
+  };
+  const storyboard = toon2d.buildToon2dStoryboard(project, wordRows);
+  assert.equal(storyboard.fps, 30);
+  assert.equal(storyboard.end_pad, 0.6);
+  assert.equal(storyboard.scenes[0].start_word, 0);
+  assert.equal(storyboard.scenes[1].start_word, 9);
+  assert.equal(storyboard.scenes[0].set, 'shop_counter');
+  assert.equal(storyboard.scenes[0].cast[0].type, 'knight');
+  assert.equal(storyboard.scenes[1].mood, 'night');
+});
+
+test('rejects scene narration that cannot be located in the script', () => {
+  const project = {
+    title: 'Missing line',
+    script: 'The sky is blue.',
+    targetSeconds: 30,
+    scenes: [{ narration: 'The ocean is green.', set: 'field', mood: 'day' }]
+  };
+  const wordRows = toon2d.scriptTokens(project.script).map((w, i) => ({ w, s: i, e: i + 0.2 }));
+  assert.throws(() => toon2d.buildToon2dStoryboard(project, wordRows), /must appear in the script/);
 });
