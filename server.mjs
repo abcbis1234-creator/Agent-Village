@@ -111,6 +111,112 @@ async function generateMedia(kind, prompt, options = {}) {
   return { provider: cfg.provider, kind, prompt, status: 'accepted', note: 'Video adapter not implemented. Add an adapter behind this boundary to produce real video.' };
 }
 
+// LLM provider (OpenAI-compatible). Works with Ollama, LM Studio, Groq, OpenAI, etc.
+// Configured ONLY via environment variables; keys never reach the browser.
+const llmConfig = {
+  baseUrl: process.env.LLM_BASE_URL || '',
+  apiKey: process.env.LLM_API_KEY || '',
+  model: process.env.LLM_MODEL || 'llama3.1',
+  temperature: Number(process.env.LLM_TEMPERATURE || 0.4),
+  timeoutMs: Number(process.env.LLM_TIMEOUT_MS || 30000),
+  configured: Boolean(process.env.LLM_BASE_URL),
+};
+
+function clampText(value, max = 2000) { return typeof value === 'string' ? value.slice(0, max) : ''; }
+
+async function callLLM(messages, options = {}) {
+  if (!llmConfig.configured) throw new Error('LLM not configured (set LLM_BASE_URL)');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || llmConfig.timeoutMs);
+  try {
+    const payload = {
+      model: options.model || llmConfig.model,
+      temperature: options.temperature ?? llmConfig.temperature,
+      messages,
+    };
+    if (options.json) payload.response_format = { type: 'json_object' };
+    const response = await fetch(`${llmConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(llmConfig.apiKey ? { Authorization: `Bearer ${llmConfig.apiKey}` } : {}) },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`LLM error: HTTP ${response.status}`);
+    const data = await response.json();
+    const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!content) throw new Error('LLM returned no content');
+    return content;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('LLM request timed out');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function matchKnowledge(mission) {
+  const tokens = new Set(normalizeMission(mission).split(/\W+/).filter((w) => w.length > 3));
+  return knowledgeStore.filter((k) => {
+    const kt = normalizeMission(`${k.title} ${k.content}`).split(/\W+/).filter((w) => w.length > 3);
+    return kt.some((w) => tokens.has(w));
+  }).slice(0, 3);
+}
+
+async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge }) {
+  const knowledgeText = matchedKnowledge.length ? matchedKnowledge.map((k) => `- ${k.title}: ${k.content}`).join('\n') : '(none)';
+  const system = [
+    'You are Agent Village, a bounded local AI workspace.',
+    'Return ONLY valid JSON (no markdown fences) with exactly this shape:',
+    '{"decision": string, "rationale": string, "dissent": string, "next_actions": string[], "confidence": "low"|"medium"|"high", "deliverable": {"title": string, "sections": [{"name": string, "content": string}]}, "reports": [{"role": string, "text": string}]}',
+    'Rules: be concrete and useful; keep the deliverable bounded and reviewable; include a human review gate; never claim to have executed external actions; never include secrets, keys, or credentials.',
+  ].join(' ');
+  const user = [
+    `Mission: ${mission}`,
+    `Capability: ${info.name} (${key})`,
+    `Rounds: ${rounds}`,
+    `Reference knowledge:\n${knowledgeText}`,
+    `Produce exactly ${roles.length} report entries, one per role in this order: ${roles.map((r) => r[1]).join(', ')}.`,
+  ].join('\n');
+  const raw = await callLLM([{ role: 'system', content: system }, { role: 'user', content: user }], { json: true });
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('LLM returned invalid JSON'); }
+
+  const reportEntries = Array.isArray(parsed.reports) ? parsed.reports : [];
+  const reports = [];
+  for (let round = 1; round <= rounds; round += 1) {
+    roles.forEach(([roleKey, name, specialty], index) => {
+      const text = (reportEntries[index] && reportEntries[index].text) || `${info.name} · ${name} · round ${round}: bounded contribution recorded.`;
+      reports.push({ role: { key: roleKey, name, specialty }, round, source: `LLM · ${llmConfig.model}`, text: clampText(String(text), 900) });
+    });
+  }
+
+  let sections = [];
+  if (parsed.deliverable && Array.isArray(parsed.deliverable.sections)) {
+    sections = parsed.deliverable.sections
+      .filter((s) => s && s.name)
+      .slice(0, 8)
+      .map((s) => ({ name: clampText(String(s.name), 80), content: clampText(String(s.content), 1200) }));
+  }
+  if (!sections.length) sections = deliverable(mission, key, info).sections;
+  if (matchedKnowledge.length) sections = [...sections, { name: 'Knowledge', content: matchedKnowledge.map((k) => `${k.title}: ${k.content}`).join(' | ') }];
+
+  const validConfidence = ['low', 'medium', 'high'];
+  const verdict = {
+    decision: clampText(parsed.decision || `Proceed with a bounded first slice for "${mission}".`, 500),
+    rationale: clampText(parsed.rationale || `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, 800),
+    dissent: clampText(parsed.dissent || 'Do not expand scope until the first slice produces evidence.', 500),
+    next_actions: Array.isArray(parsed.next_actions) && parsed.next_actions.length
+      ? parsed.next_actions.slice(0, 8).map((a) => clampText(String(a), 200))
+      : ['Review the deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.'],
+    confidence: validConfidence.includes(parsed.confidence) ? parsed.confidence : 'medium',
+    calibrated: true,
+  };
+
+  const deliverableOut = { type: `${key}_brief`, title: clampText((parsed.deliverable && parsed.deliverable.title) || `${info.name} deliverable`, 200), sections };
+  audit('llm', `generated ${key} deliverable via ${llmConfig.model}`);
+  return { id: `mission-${Date.now()}`, mission, rounds, source: `LLM · ${llmConfig.model}`, capability: info, deliverable: deliverableOut, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict };
+}
+
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
   ['generalist', 'Jack of All Trades', 'JA', 'Handle any open-ended task across reasoning, code, writing, and analysis.', ['general reasoning', 'multi-domain', 'bounded synthesis']],
@@ -235,6 +341,14 @@ async function runTask(body) {
   const key = routeMission(mission, body.capability);
   const info = capabilities.find((item) => item.key === key) || capabilities[4];
   const roles = [['nova', 'Nova', 'Planning'], ['atlas', 'Atlas', 'Architecture'], ['lyra', 'Lyra', 'Research'], ['forge', 'Forge', 'Build'], ['echo', 'Echo', 'Critique']];
+  const matchedKnowledge = matchKnowledge(mission);
+  if (llmConfig.configured) {
+    try {
+      return await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge });
+    } catch (error) {
+      audit('llm', `fallback to demo: ${error.message}`);
+    }
+  }
   const reports = [];
   for (let round = 1; round <= rounds; round += 1) for (const [role, name, specialty] of roles) reports.push({ role: { key: role, name, specialty }, round, source: 'MANAGED LOCAL DEMO', text: report(role, key, round) });
   const decisionTemplates = {
@@ -249,11 +363,6 @@ async function runTask(body) {
   };
   const decision = decisionTemplates[key] || `Proceed with a bounded first slice for "${mission}".`;
   const confidenceLevels = { generalist: 'high', reasoning: 'high', multimodal: 'medium', agentic: 'medium', long_context: 'medium' };
-  const missionTokens = new Set(normalizeMission(mission).split(/\W+/).filter((w) => w.length > 3));
-  const matchedKnowledge = knowledgeStore.filter((k) => {
-    const tokens = normalizeMission(`${k.title} ${k.content}`).split(/\W+/).filter((w) => w.length > 3);
-    return tokens.some((w) => missionTokens.has(w));
-  }).slice(0, 3);
   const del = deliverable(mission, key, info);
   if (matchedKnowledge.length) del.sections = [...del.sections, { name: 'Knowledge', content: matchedKnowledge.map((k) => `${k.title}: ${k.content}`).join(' | ') }];
   return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
@@ -269,7 +378,7 @@ async function handleRequest(req, res) {
   const ip = req.socket.remoteAddress || 'unknown';
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
-  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })) }); }
+  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: [...Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })), { kind: 'llm', provider: llmConfig.model, configured: llmConfig.configured }] }); }
   if (req.method === 'GET' && url.pathname === '/api/feedback') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.slice(-50) }); }
   if (req.method === 'POST' && url.pathname === '/api/feedback') {
     try {
@@ -374,4 +483,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge, callLLM, runTaskWithLLM, matchKnowledge };

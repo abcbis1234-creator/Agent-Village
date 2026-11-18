@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server, generateImageStableDiffusion, providerConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig, llmConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge } from '../server.mjs';
 
 let port;
 
@@ -249,4 +249,64 @@ test('Feedback corrections drive routing; knowledge injects into deliverables', 
   }
   await saveFeedback();
   await saveKnowledge();
+});
+
+test('LLM provider generates via an OpenAI-compatible endpoint', async () => {
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let parsed = {};
+      try { parsed = JSON.parse(body); } catch { /* ignore */ }
+      assert.strictEqual(parsed.model, 'mock-model');
+      const content = JSON.stringify({
+        decision: 'LLM decision for the mission',
+        rationale: 'LLM rationale grounded in knowledge',
+        dissent: 'LLM dissent and watch-outs',
+        next_actions: ['Review the LLM deliverable', 'Run the smallest slice'],
+        confidence: 'high',
+        deliverable: { title: 'LLM deliverable', sections: [{ name: 'Section A', content: 'Content A' }] },
+        reports: [1, 2, 3, 4, 5].map((i) => ({ role: `r${i}`, text: `Report ${i} from LLM` })),
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const mockPort = mock.address().port;
+
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, model: llmConfig.model };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mockPort}`;
+  llmConfig.model = 'mock-model';
+  try {
+    const res = await request('/api/run', 'POST', { mission: 'write a launch plan for a robot cafe', capability: 'planning', rounds: 1 });
+    assert.strictEqual(res.status, 200);
+    assert.match(res.body.source, /LLM/);
+    assert.strictEqual(res.body.verdict.decision, 'LLM decision for the mission');
+    assert.strictEqual(res.body.verdict.confidence, 'high');
+    assert.ok(res.body.deliverable.sections.some((s) => s.name === 'Section A'));
+    assert.ok(res.body.reports.length >= 5);
+    assert.ok(res.body.reports.every((r) => /LLM/.test(r.source)));
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.model = original.model;
+    await new Promise((resolve) => mock.close(resolve));
+  }
+});
+
+test('LLM failure falls back to the demo router', async () => {
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = 'http://127.0.0.1:9';
+  try {
+    const res = await request('/api/run', 'POST', { mission: 'write a launch plan', capability: 'planning', rounds: 1 });
+    assert.strictEqual(res.status, 200);
+    assert.match(res.body.source, /MANAGED LOCAL DEMO/);
+    assert.ok(res.body.verdict && res.body.verdict.decision);
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+  }
 });

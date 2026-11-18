@@ -135,6 +135,39 @@ Generated files are written to `media/` (git-ignored) and served from `GET /medi
 
 Video generation is a documented adapter placeholder. Wire a video provider (e.g. AnimateDiff/ComfyUI or a hosted API) into `generateMedia()` behind the same server boundary and set `VIDEO_BASE_URL` + `VIDEO_PROVIDER_API_KEY`.
 
+## LLM provider (real generation)
+
+By default Agent Village uses the deterministic local demo router. Set an **OpenAI-compatible** LLM endpoint to get real model-generated deliverables grounded in your knowledge notes. Works with Ollama, LM Studio, Groq, OpenAI, or any `/chat/completions` API.
+
+```bash
+# Ollama (local, free)
+ollama pull llama3.1
+ollama serve                     # http://127.0.0.1:11434
+export LLM_BASE_URL="http://127.0.0.1:11434/v1"
+export LLM_MODEL="llama3.1"
+npm start
+```
+
+```bash
+# LM Studio
+export LLM_BASE_URL="http://127.0.0.1:1234/v1"
+export LLM_MODEL="local-model"
+
+# OpenAI or compatible hosted API
+export LLM_BASE_URL="https://api.openai.com/v1"
+export LLM_API_KEY="sk-..."
+export LLM_MODEL="gpt-4o-mini"
+```
+
+Optional: `LLM_TEMPERATURE` (default `0.4`), `LLM_TIMEOUT_MS` (default `30000`).
+
+When configured:
+- `POST /api/run` asks the LLM for JSON (deliverable, reports, verdict), validated and clamped server-side.
+- Matched knowledge notes are injected into the prompt as retrieval context.
+- If the LLM is unreachable or returns invalid JSON, the demo router is used as a fallback and the audit log records it.
+
+`GET /api/providers` reports the `llm` provider and model (never the key). No keys reach the browser, and the model never modifies code.
+
 ## Learning and memory (what it can and cannot do)
 
 Agent Village has **no trained model**. Routing is deterministic keyword scoring plus templates, so there is nothing to "retrain." What it supports instead is a **persistent memory layer**:
