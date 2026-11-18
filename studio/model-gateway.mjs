@@ -54,7 +54,7 @@ function providerConfig(id, env = process.env) {
     configured: id === 'ollama' ? true : Boolean(env[definition.keyEnv]),
     model: env[definition.modelEnv] || definition.defaultModel,
     key: definition.keyEnv ? (env[definition.keyEnv] || '') : '',
-    endpoint: definition.endpoint
+    endpoint: id === 'ollama' ? (env.OLLAMA_HOST || definition.endpoint) : definition.endpoint
   };
 }
 
