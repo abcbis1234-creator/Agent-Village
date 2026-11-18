@@ -37,3 +37,8 @@
 .editor-message.error { color: #ff9fac; }
 @media (max-width: 900px) { .shorts-layout { grid-template-columns: 1fr; } .project-list { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 560px) { .shorts-main { padding: 30px 16px 48px; } .shorts-fields, .project-list { grid-template-columns: 1fr; } .section-head { align-items: flex-start; flex-direction: column; } .shorts-editor, .shorts-sidebar { padding: 16px; } }
+
+.scene-render-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.scene-render-fields label { margin-bottom: 8px; }
+@media (max-width: 760px) { .scene-render-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .scene-render-fields { grid-template-columns: 1fr; } }
