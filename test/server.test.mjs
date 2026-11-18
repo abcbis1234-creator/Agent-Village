@@ -153,3 +153,36 @@ test('New top-model capabilities route and verdict metadata', async (t) => {
   assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'agentic'));
   assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'long_context'));
 });
+
+test('Provider health and media generation guards', async (t) => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const prov = await request(port, '/api/providers');
+  assert.strictEqual(prov.status, 200);
+  assert.ok(Array.isArray(prov.body.providers));
+  const kinds = prov.body.providers.map((p) => p.kind);
+  assert.ok(kinds.includes('image') && kinds.includes('video'));
+  for (const p of prov.body.providers) {
+    assert.strictEqual(p.configured, false, `provider ${p.kind} should be unconfigured by default`);
+  }
+
+  // Generate without approval should return 202 (approval required)
+  const pending = await request(port, '/api/media/generate', 'POST', { kind: 'image', prompt: 'a roblox scene' });
+  assert.strictEqual(pending.status, 202);
+  assert.ok(pending.body.id);
+  assert.strictEqual(pending.body.error, 'approval required');
+
+  // Generate with unconfigured provider should return 400
+  const badKind = await request(port, '/api/media/generate', 'POST', { kind: 'image', prompt: 'x', approved: true, id: 'nonexistent' });
+  assert.strictEqual(badKind.status, 400);
+
+  // Missing kind/prompt should return 400
+  const missing = await request(port, '/api/media/generate', 'POST', { kind: 'image' });
+  assert.strictEqual(missing.status, 400);
+
+  // Approve unknown id should return 400
+  const badApprove = await request(port, '/api/media/approve', 'POST', { id: 'does-not-exist' });
+  assert.strictEqual(badApprove.status, 400);
+});

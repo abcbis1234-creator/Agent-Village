@@ -336,5 +336,80 @@ $('#copy-contract').addEventListener('click', async () => {
   }
 });
 
+async function loadProviders() {
+  try {
+    const response = await fetch('/api/providers');
+    const payload = await response.json();
+    const list = $('#capability-list');
+    if (!list) return;
+    const providerBox = document.createElement('div');
+    providerBox.className = 'provider-status';
+    const title = document.createElement('strong');
+    title.textContent = 'Media providers';
+    providerBox.appendChild(title);
+    (payload.providers || []).forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'provider-row';
+      const name = document.createElement('span');
+      name.textContent = `${p.kind} (${p.name || 'none'})`;
+      const status = document.createElement('span');
+      status.className = `provider-status-dot ${p.configured ? 'configured' : 'unconfigured'}`;
+      status.textContent = p.configured ? 'configured' : 'not configured';
+      row.appendChild(name);
+      row.appendChild(status);
+      providerBox.appendChild(row);
+    });
+    list.appendChild(providerBox);
+  } catch {
+    /* The core app remains useful if the registry endpoint is unavailable. */
+  }
+}
+
+async function approveMedia(id) {
+  try {
+    const response = await fetch('/api/media/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Approval failed');
+    return result;
+  } catch (error) {
+    addActivity('Media approval failed', error.message, 'error');
+    throw error;
+  }
+}
+
+async function runMedia(kind, prompt) {
+  try {
+    const response = await fetch('/api/media/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, prompt, approved: false }),
+    });
+    const result = await response.json();
+    if (response.status === 202) {
+      addActivity('Media approval required', `${kind}: ${prompt.slice(0, 60)}…`, 'active');
+      const approved = await approveMedia(result.id);
+      const gen = await fetch('/api/media/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, prompt, approved: true, id: result.id }),
+      });
+      const out = await gen.json();
+      if (!gen.ok) throw new Error(out.error || 'Generation failed');
+      addActivity(`${kind} generated`, out.status, 'done');
+      return out;
+    }
+    if (!response.ok) throw new Error(result.error || 'Generation failed');
+    addActivity(`${kind} generated`, result.status, 'done');
+    return result;
+  } catch (error) {
+    addActivity('Media generation blocked', error.message, 'error');
+    throw error;
+  }
+}
 loadCapabilities();
 loadAgentContract();
+loadProviders();

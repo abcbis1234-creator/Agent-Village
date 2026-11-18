@@ -26,6 +26,41 @@ function rateLimitRun(ip) {
   return entry.count <= RUN_RATE_LIMIT.max;
 }
 
+// Provider registry — credentials come ONLY from environment variables, never from code or browser.
+// Each provider declares whether it is configured and exposes a health check and generate function.
+const providerConfig = {
+  image: {
+    name: process.env.IMAGE_PROVIDER_NAME || 'none',
+    configured: Boolean(process.env.IMAGE_PROVIDER_API_KEY),
+    kind: 'image',
+  },
+  video: {
+    name: process.env.VIDEO_PROVIDER_NAME || 'none',
+    configured: Boolean(process.env.VIDEO_PROVIDER_API_KEY),
+    kind: 'video',
+  },
+};
+const mediaApprovalState = new Map(); // id -> { approved, mission, kind, prompt, at }
+const auditLog = [];
+function audit(kind, detail) { auditLog.push({ at: new Date().toISOString(), kind, detail }); if (auditLog.length > 200) auditLog.shift(); }
+
+async function generateMedia(kind, prompt) {
+  const cfg = providerConfig[kind];
+  if (!cfg || !cfg.configured) throw new Error(`${kind} provider not configured`);
+  const keyEnv = kind === 'image' ? 'IMAGE_PROVIDER_API_KEY' : 'VIDEO_PROVIDER_API_KEY';
+  const key = process.env[keyEnv];
+  if (!key) throw new Error(`${kind} provider credentials missing`);
+  // Placeholder: real provider adapters go here. Never log or return the key.
+  audit(kind, `generate requested: ${prompt.slice(0, 80)}`);
+  return {
+    provider: cfg.name,
+    kind,
+    prompt,
+    status: 'accepted',
+    note: 'Provider adapter not implemented. Add an adapter behind this boundary to produce real media.',
+  };
+}
+
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
   ['generalist', 'Jack of All Trades', 'JA', 'Handle any open-ended task across reasoning, code, writing, and analysis.', ['general reasoning', 'multi-domain', 'bounded synthesis']],
@@ -145,12 +180,50 @@ async function handleRequest(req, res) {
   const ip = req.socket.remoteAddress || 'unknown';
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
-  if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
+  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, name: cfg.name, configured: cfg.configured })) }); }
+  if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run', providers: 'GET /api/providers', media: 'POST /api/media/generate', approve: 'POST /api/media/approve' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
   if (req.method === 'GET' && url.pathname === '/manus-routes.json') { logRequest(req, 200); return staticFile('/manus-routes.json', res); }
   if (req.method === 'POST' && url.pathname === '/api/run') {
     if (!rateLimitRun(ip)) { logRequest(req, 429); return send(res, 429, { error: 'rate limit exceeded', retry_after: Math.ceil(RUN_RATE_LIMIT.windowMs / 1000) }); }
     try { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); } const result = await runTask(JSON.parse(raw || '{}')); logRequest(req, 200); return send(res, 200, result); }
     catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/media/generate') {
+    if (!rateLimitRun(ip)) { logRequest(req, 429); return send(res, 429, { error: 'rate limit exceeded', retry_after: Math.ceil(RUN_RATE_LIMIT.windowMs / 1000) }); }
+    try {
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const kind = body.kind;
+      const prompt = body.prompt;
+      if (!kind || !prompt || typeof prompt !== 'string') throw new Error('kind and prompt are required');
+      if (!providerConfig[kind]) throw new Error('unknown media kind');
+      if (!providerConfig[kind].configured) { logRequest(req, 400); return send(res, 400, { error: `${kind} provider not configured`, configured: false }); }
+      if (!body.approved) {
+        const id = `media-${Date.now()}`;
+        mediaApprovalState.set(id, { approved: false, mission: body.mission || '', kind, prompt, at: new Date().toISOString() });
+        logRequest(req, 202);
+        return send(res, 202, { error: 'approval required', id, kind, prompt, note: 'Call POST /api/media/approve with this id to authorize generation.' });
+      }
+      const entry = mediaApprovalState.get(body.id);
+      if (!entry || !entry.approved || entry.kind !== kind || entry.prompt !== prompt) throw new Error('no valid approval for this generation');
+      const result = await generateMedia(kind, prompt);
+      entry.approved = false; // one-time use
+      logRequest(req, 200);
+      return send(res, 200, result);
+    } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/media/approve') {
+    try {
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const entry = mediaApprovalState.get(body.id);
+      if (!entry) throw new Error('unknown approval id');
+      entry.approved = true;
+      logRequest(req, 200);
+      return send(res, 200, { approved: true, id: body.id, kind: entry.kind, prompt: entry.prompt });
+    } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
   }
   if (req.method === 'GET') { return staticFile(url.pathname, res); }
   logRequest(req, 404);
@@ -174,4 +247,4 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT };
+export { server, port, publicDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, providerConfig, mediaApprovalState, auditLog, generateMedia };
