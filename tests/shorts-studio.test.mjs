@@ -100,7 +100,7 @@ test('supports requesting changes and returning the project to draft', async () 
 });
 
 test('builds the original toon2d storyboard schema from scene directions', () => {
-  const script = 'A knight paid the town baker in moon coins.\\nNobody had ever seen one.';
+  const script = 'A knight paid the town baker in moon coins.\nNobody had ever seen one.';
   const tokens = toon2d.scriptTokens(script);
   const wordRows = tokens.map((w, i) => ({ w, s: i * 2, e: i * 2 + 0.4, sent: i < 9 ? 0 : 1 }));
   wordRows[wordRows.length - 1].e = 29.4;
