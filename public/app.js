@@ -47,3 +47,30 @@ async function runMission(event) { event.preventDefault(); const mission = $('#m
 $('#open-mission').addEventListener('click', () => $('#mission-dialog').showModal()); $('#mission-form').addEventListener('submit', runMission); $('#open-history').addEventListener('click', () => { const items = getHistory(); if (items.length) { $('#mission-card-title').textContent = items[0].mission; $('#mission-card-copy').textContent = items[0].decision; } });
 $('#kpi-missions').textContent = getHistory().length; $('#history-count').textContent = getHistory().length;
 $('#approve-plan').addEventListener('click', () => { setWorkbenchStatus('APPROVED', 'HIGH'); addActivity('Plan approved', 'The next connector may execute only within the reviewed scope.', 'active'); }); $('#pause-run').addEventListener('click', () => { setWorkbenchStatus('PAUSED', '—'); addActivity('Run paused', 'No external action will continue until resumed.', 'error'); }); $('#copy-contract').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#copy-contract').dataset.contract || $('#handoff-code').textContent); $('#copy-contract').textContent = 'Copied'; setTimeout(() => { $('#copy-contract').textContent = 'Copy contract'; }, 1500); } catch { $('#copy-contract').textContent = 'Select and copy'; } }); loadCapabilities(); loadAgentContract();
+
+\n// Live multi-model council. Each provider is selected explicitly; token remains in memory only.
+const councilForm = document.querySelector('#council-form');
+if (councilForm) councilForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = document.querySelector('#run-live-council');
+  const output = document.querySelector('#council-results');
+  const mission = document.querySelector('#council-mission').value.trim();
+  const token = document.querySelector('#council-token').value;
+  const assignments = [...councilForm.querySelectorAll('[data-role]')].map((select) => ({ role: select.dataset.role, provider: select.value }));
+  button.disabled = true; button.textContent = 'Running five agents…'; output.textContent = 'Calling selected models. This may take a little while…';
+  try {
+    const response = await fetch('/api/council/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-model-token': token }, body: JSON.stringify({ mission, assignments }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Council request failed');
+    output.textContent = '';
+    result.reports.forEach((report) => {
+      const card = document.createElement('article'); card.className = 'council-report';
+      const heading = document.createElement('h3'); heading.textContent = report.role.name + ' · ' + report.role.specialty;
+      const meta = document.createElement('small'); meta.textContent = report.provider + ' / ' + report.model;
+      const body = document.createElement('pre'); body.textContent = report.text;
+      card.append(heading, meta, body); output.appendChild(card);
+    });
+    const notice = document.createElement('p'); notice.className = 'model-note'; notice.textContent = result.notice; output.appendChild(notice);
+  } catch (error) { output.textContent = error.message; }
+  finally { button.disabled = false; button.textContent = 'Run live council ↗'; }
+});
