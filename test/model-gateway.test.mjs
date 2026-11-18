@@ -5,7 +5,10 @@ import { listModelProviders, generateWithModel, compareModels } from '../studio/
 const env = {
   OPENAI_API_KEY: 'test-openai',
   ANTHROPIC_API_KEY: 'test-anthropic',
-  GEMINI_API_KEY: 'test-gemini'
+  GEMINI_API_KEY: 'test-gemini',
+  OPENAI_MODEL: 'test-openai-model',
+  ANTHROPIC_MODEL: 'test-claude-model',
+  GEMINI_MODEL: 'test-gemini-model'
 };
 
 test('provider status reveals configuration but never credentials', () => {
