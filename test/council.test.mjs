@@ -34,3 +34,20 @@ test('council rejects unknown providers before provider calls', async () => {
   bad[0].provider = 'unknown';
   await assert.rejects(runCouncil({ mission: 'x', assignments: bad, fetchImpl: () => { throw new Error('must not call'); } }), /Unsupported provider/);
 });
+
+test('approved guidance is included in specialist and reviewer context', async () => {
+  const prompts = [];
+  await runCouncil({
+    mission: 'Prepare a project plan',
+    assignments,
+    guidance: 'When planning, include measurable acceptance criteria and test each milestone.',
+    env,
+    fetchImpl: async (_url, options) => {
+      prompts.push(JSON.parse(options.body).messages[1].content);
+      return new Response(JSON.stringify({ message: { content: 'Reviewed contribution' } }));
+    }
+  });
+  assert.equal(prompts.length, 5);
+  assert.ok(prompts.every((prompt) => prompt.includes('APPROVED TEAM GUIDANCE')));
+  assert.ok(prompts.every((prompt) => prompt.includes('measurable acceptance criteria')));
+});
