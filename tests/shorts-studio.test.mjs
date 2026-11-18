@@ -17,7 +17,7 @@ test('accepts the Shorts Studio 30–40 second project shape', () => {
 });
 
 test('rejects a duration outside the supported range', () => {
-  assert.throws(() => validateProjectInput({ title: 'Test', topic: 'Test', targetSeconds: 45 }), /30 and 40/);
+  assert.throws(() => validateProjectInput({ title: 'Test', topic: 'Test', targetSeconds: 45 }), /30 to 40/);
 });
 
 test('rejects non-HTTP source URLs', () => {
