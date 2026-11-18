@@ -4,10 +4,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const storePath = join(root, 'data', 'shorts-projects.json');
+const storePath = join(process.env.SHORTS_STUDIO_DATA_DIR || join(root, 'data'), 'shorts-projects.json');
 let writeQueue = Promise.resolve();
 
-const allowedStatuses = new Set(['draft', 'review', 'approved', 'rejected']);
 const editableFields = new Set(['title', 'topic', 'audience', 'targetSeconds', 'script', 'sources', 'scenes']);
 
 function cleanText(value, field, max) {
