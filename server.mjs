@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { handleShortsApi } from './studio/shorts-api.mjs';
 import { listModelProviders, generateWithModel, compareModels } from './studio/model-gateway.mjs';
 import { runCouncil } from './studio/council.mjs';
+import { createLearningStore } from './studio/learning-loop.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
 const port = Number(process.env.PORT || 3000);
+const learning = createLearningStore({ filePath: join(root, '.agent-village', 'learning.json') });
 
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
@@ -105,6 +107,21 @@ function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (await handleShortsApi(req, res, url)) return;
+  if (url.pathname.startsWith('/api/learning/')) {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Learning workspace is disabled or unauthorized.' });
+      if (req.method === 'GET' && url.pathname === '/api/learning/state') return send(res, 200, await learning.snapshot());
+      if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 12000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      if (url.pathname === '/api/learning/feedback') return send(res, 201, await learning.submitFeedback(body));
+      if (url.pathname === '/api/learning/decision') return send(res, 200, await learning.decideProposal(body));
+      if (url.pathname === '/api/learning/rollback') return send(res, 200, await learning.rollback(body));
+      return send(res, 404, { error: 'not_found' });
+    } catch (error) { return send(res, 400, { error: error.message || 'learning request failed' }); }
+  }
   if (req.method === 'POST' && url.pathname === '/api/council/run') {
     try {
       const gateToken = process.env.MODEL_GATE_TOKEN;
@@ -112,7 +129,10 @@ const server = createServer(async (req, res) => {
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (raw.length > 18000) throw new Error('request body is too large'); }
       const body = JSON.parse(raw || '{}');
-      return send(res, 200, await runCouncil({ mission: body.mission, assignments: body.assignments }));
+      const guidance = await learning.activeGuidance();
+      const result = await runCouncil({ mission: body.mission, assignments: body.assignments, guidance });
+      await learning.recordSession({ id: result.id, mission: result.mission, reports: result.reports });
+      return send(res, 200, { ...result, learning: { guidanceApplied: Boolean(guidance), feedbackEndpoint: '/api/learning/feedback' } });
     } catch (error) { return send(res, 400, { error: error.message || 'council run failed' }); }
   }
   if (req.method === 'GET' && url.pathname === '/api/models/providers') return send(res, 200, { providers: listModelProviders() });
