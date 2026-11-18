@@ -59,3 +59,28 @@ test('Ollama local chat endpoint works without an API key', async () => {
   assert.equal(captured.body.model, 'llama3.2');
   assert.equal(result.text, 'Hello from local model.');
 });
+
+test('hosted providers have no guessed default model IDs', () => {
+  const providers = listModelProviders(env);
+  for (const id of ['openai', 'anthropic', 'gemini']) {
+    assert.equal(providers.find((item) => item.id === id).model, '');
+  }
+});
+
+test('Ollama rejects non-local endpoints before making a request', async () => {
+  await assert.rejects(generateWithModel({
+    provider: 'ollama', prompt: 'x', env: { OLLAMA_HOST: 'http://192.168.1.20:11434/api/chat' },
+    fetchImpl: () => { throw new Error('network must not run'); }
+  }), /localhost/);
+});
+
+test('invalid timeout is rejected before making a request', async () => {
+  await assert.rejects(generateWithModel({ provider: 'ollama', prompt: 'x', env: {}, timeoutMs: 999, fetchImpl: () => { throw new Error('network must not run'); } }), /timeoutMs/);
+});
+
+test('Ollama timeout aborts the request', async () => {
+  await assert.rejects(generateWithModel({
+    provider: 'ollama', prompt: 'x', env: {}, timeoutMs: 1000,
+    fetchImpl: (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }))
+  }), /timed out/);
+});
