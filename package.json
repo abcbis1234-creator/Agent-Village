@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check public/shorts.js && node --check studio/shorts-studio.mjs && node --check studio/shorts-api.mjs && node --check studio/toon2d-adapter.mjs && node --check studio/council.mjs && node --check studio/learning-loop.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/shorts.js && node --check studio/shorts-studio.mjs && node --check studio/shorts-api.mjs && node --check studio/toon2d-adapter.mjs && node --check studio/council.mjs && node --check studio/learning-loop.mjs && node --check studio/code-evolution.mjs && node --check test/code-evolution.test.mjs",
     "test": "node --test"
   }
 }
