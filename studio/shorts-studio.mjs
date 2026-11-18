@@ -17,7 +17,7 @@ function cleanText(value, field, max) {
   return cleaned;
 }
 
-function validateProjectInput(input, partial = false) {
+export function validateProjectInput(input, partial = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('project must be an object');
   const result = {};
   if (!partial || Object.hasOwn(input, 'title')) result.title = cleanText(input.title, 'title', 100);
