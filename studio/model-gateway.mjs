@@ -4,18 +4,25 @@
  * Provider calls are explicit; there is no automatic paid-model fallback.
  */
 const PROVIDERS = {
+  ollama: {
+    label: 'Ollama (local)',
+    keyEnv: '',
+    modelEnv: 'OLLAMA_MODEL',
+    defaultModel: 'llama3.2',
+    endpoint: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434/api/chat'
+  },
   openai: {
     label: 'OpenAI / ChatGPT',
     keyEnv: 'OPENAI_API_KEY',
     modelEnv: 'OPENAI_MODEL',
-    defaultModel: 'gpt-6.2-astra',
+    defaultModel: '',
     endpoint: 'https://api.openai.com/v1/responses'
   },
   anthropic: {
     label: 'Anthropic / Claude',
     keyEnv: 'ANTHROPIC_API_KEY',
     modelEnv: 'ANTHROPIC_MODEL',
-    defaultModel: 'claude-sonnet-5-5',
+    defaultModel: '',
     endpoint: 'https://api.anthropic.com/v1/messages'
   },
   gemini: {
@@ -37,9 +44,9 @@ function providerConfig(id, env = process.env) {
   return {
     id,
     label: definition.label,
-    configured: Boolean(env[definition.keyEnv]),
+    configured: id === 'ollama' ? true : Boolean(env[definition.keyEnv]),
     model: env[definition.modelEnv] || definition.defaultModel,
-    key: env[definition.keyEnv] || '',
+    key: definition.keyEnv ? (env[definition.keyEnv] || '') : '',
     endpoint: definition.endpoint
   };
 }
@@ -83,7 +90,9 @@ async function requestProvider(config, prompt, system, fetchImpl, signal) {
   let url = config.endpoint;
   let headers = { 'Content-Type': 'application/json' };
   let body;
-  if (config.id === 'openai') {
+  if (config.id === 'ollama') {
+    body = { model: config.model, stream: false, messages: [{ role: 'system', content: system || 'You are a careful specialist agent. State uncertainty and do not invent evidence.' }, { role: 'user', content: prompt }] };
+  } else if (config.id === 'openai') {
     headers.Authorization = 'Bearer ' + config.key;
     body = { model: config.model, input: [{ role: 'system', content: system || 'You are a careful specialist agent. State uncertainty and do not invent evidence.' }, { role: 'user', content: prompt }], max_output_tokens: 1800 };
   } else if (config.id === 'anthropic') {
@@ -103,7 +112,7 @@ async function requestProvider(config, prompt, system, fetchImpl, signal) {
     const message = data.error?.message || data.message || ('Provider returned HTTP ' + response.status);
     throw new Error(config.label + ': ' + message.slice(0, 500));
   }
-  const text = config.id === 'openai' ? extractOpenAI(data) : config.id === 'anthropic' ? extractAnthropic(data) : extractGemini(data);
+  const text = config.id === 'ollama' ? (data.message?.content || '').trim() : config.id === 'openai' ? extractOpenAI(data) : config.id === 'anthropic' ? extractAnthropic(data) : extractGemini(data);
   if (!text) throw new Error(config.label + ' returned no text content');
   return text;
 }
@@ -127,7 +136,7 @@ export async function generateWithModel({ provider, prompt, system = '', env = p
 }
 
 export async function compareModels({ prompt, providers = ['openai', 'anthropic', 'gemini'], system = '', env = process.env, fetchImpl = fetch } = {}) {
-  if (!Array.isArray(providers) || providers.length < 1 || providers.length > 3 || new Set(providers).size !== providers.length) {
+  if (!Array.isArray(providers) || providers.length < 1 || providers.length > 4 || new Set(providers).size !== providers.length) {
     throw new Error('Choose between one and three distinct providers');
   }
   const results = await Promise.all(providers.map(async (provider) => {
