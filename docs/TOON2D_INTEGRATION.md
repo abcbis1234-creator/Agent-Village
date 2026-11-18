@@ -50,7 +50,7 @@ The Shorts Studio **Prepare Toon2D project** action is available only after a pr
 4. Writes a `storyboard.json` using the renderer's actual `start_word`, `set`, `mood`, `cast`, and `keys` fields.
 5. Runs `t2d.py plan` and returns the generated plan summary.
 
-After the render has been completed, run `t2d.py render` until it reports `DONE`, then `t2d.py join` to create `final.mp4`. The Shorts Studio **Create final video with Pexels** action then creates a separate `final-pexels.mp4` output. It overlays each approved scene's matching Pexels clip as a vertical picture-in-picture cutaway, keeps Toon2D scenes where no clip is available, and preserves the original Toon2D audio track. The original `final.mp4` is not modified.
+After the render has been completed, run `t2d.py render` until it reports `DONE`, then `t2d.py join` to create `final.mp4`. The Shorts Studio **Create final video with Pexels** action then creates a separate `final-pexels.mp4` output. Set `SHORTS_REVIEW_TOKEN` in the server environment and enter the same value in the Reviewer token field before approval, render preparation, or compositing. The token is checked server-side and is never stored in browser storage. It overlays each approved scene's matching Pexels clip as a vertical picture-in-picture cutaway, keeps Toon2D scenes where no clip is available, and preserves the original Toon2D audio track. The original `final.mp4` is not modified.
 
 Prepared projects are written under `data/toon2d-projects/<project-id>`.
 
@@ -64,6 +64,7 @@ The editor's scene controls map to the renderer's supported sets, moods, charact
 - Only HTTPS video URLs on Pexels-owned hostnames are accepted. Redirects are revalidated, downloads are limited to 120 MB, and download/FFmpeg operations have timeouts.
 - If Pexels is not configured, no clip is found, or a download fails, the original Toon2D scene remains unchanged. If no scene has footage, the original `final.mp4` is returned without recompression.
 - The compositor writes a separate `final-pexels.mp4`; it never overwrites the original render.
-- Production authentication is required before exposing project APIs publicly.
+- Approval, rejection, render preparation, and compositing require the server-side `SHORTS_REVIEW_TOKEN`; without it, those actions return HTTP 403.
+- This shared reviewer token is a lightweight local/development gate, not a full user identity system. Add proper user authentication and authorization before exposing project APIs publicly.
 
 The adapter deliberately uses the original renderer CLI and its project files rather than copying or reimplementing its drawing engine.
