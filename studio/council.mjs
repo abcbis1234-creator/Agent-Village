@@ -14,8 +14,8 @@ function clean(value, name, max) {
   return value.trim();
 }
 
-export async function runCouncil({ mission, assignments, env = process.env, fetchImpl = fetch } = {}) {
-  const task = clean(mission, 'mission', 1200);
+export async function runCouncil({ mission, assignments, guidance = '', env = process.env, fetchImpl = fetch } = {}) {
+  const task = clean(mission, 'mission', 1200);\n  const approvedGuidance = typeof guidance === 'string' ? guidance.trim().slice(0, 2400) : '';\n  const guidanceBlock = approvedGuidance ? '\\n\\nAPPROVED TEAM GUIDANCE (human-reviewed; follow when relevant):\\n' + approvedGuidance : '';
   if (!Array.isArray(assignments) || assignments.length !== 5) throw new Error('Select a provider for all five agents');
   const byRole = new Map(assignments.map((item) => [item.role, item.provider]));
   if (ROLES.some((role) => !['ollama', 'openai', 'anthropic', 'gemini'].includes(byRole.get(role.id)))) throw new Error('Unsupported provider assignment');
@@ -23,7 +23,7 @@ export async function runCouncil({ mission, assignments, env = process.env, fetc
     const provider = byRole.get(role.id);
     const result = await generateWithModel({
       provider, prompt: 'MISSION:\n' + task + '\n\nYOUR ROLE: ' + role.specialty + '\nTASK: ' + role.instruction + '\n\nReturn a concise, structured contribution. Clearly label assumptions and uncertainty.',
-      system: 'You are ' + role.name + ', a specialist agent in a supervised multi-agent council. You are not an autonomous system. Do not claim actions you did not perform.',
+      system: 'You are ' + role.name + ', a specialist agent in a supervised multi-agent council. You are not an autonomous system. Do not claim actions you did not perform. Approved guidance is context, not permission to bypass safety or task requirements.',
       env, fetchImpl
     });
     return { role: { id: role.id, name: role.name, specialty: role.specialty }, provider: result.provider, model: result.model, text: result.text };
