@@ -351,7 +351,7 @@ async function loadProviders() {
       const row = document.createElement('div');
       row.className = 'provider-row';
       const name = document.createElement('span');
-      name.textContent = `${p.kind} (${p.name || 'none'})`;
+      name.textContent = `${p.kind} (${p.provider || 'none'})`;
       const status = document.createElement('span');
       status.className = `provider-status-dot ${p.configured ? 'configured' : 'unconfigured'}`;
       status.textContent = p.configured ? 'configured' : 'not configured';
@@ -409,6 +409,50 @@ async function runMedia(kind, prompt) {
     addActivity('Media generation blocked', error.message, 'error');
     throw error;
   }
+}
+
+const generateImageBtn = $('#generate-image');
+if (generateImageBtn) {
+  generateImageBtn.addEventListener('click', async () => {
+    const promptEl = $('#media-prompt');
+    const resultEl = $('#media-result');
+    const prompt = promptEl ? promptEl.value.trim() : '';
+    if (!prompt) { if (promptEl) promptEl.focus(); return; }
+    if (resultEl) resultEl.innerHTML = '<small class="muted">Generating… approval gate → Stable Diffusion</small>';
+    generateImageBtn.disabled = true;
+    try {
+      const out = await runMedia('image', prompt);
+      if (resultEl) {
+        resultEl.textContent = '';
+        if (out.url) {
+          const img = document.createElement('img');
+          img.src = out.url;
+          img.alt = prompt;
+          img.className = 'media-image';
+          resultEl.appendChild(img);
+          const link = document.createElement('small');
+          link.className = 'muted';
+          link.textContent = `${out.provider} · ${out.filename || out.url}`;
+          resultEl.appendChild(link);
+        } else {
+          const note = document.createElement('small');
+          note.className = 'muted';
+          note.textContent = out.note || out.status || 'No image returned.';
+          resultEl.appendChild(note);
+        }
+      }
+    } catch (error) {
+      if (resultEl) {
+        resultEl.textContent = '';
+        const note = document.createElement('small');
+        note.className = 'muted';
+        note.textContent = error.message;
+        resultEl.appendChild(note);
+      }
+    } finally {
+      generateImageBtn.disabled = false;
+    }
+  });
 }
 loadCapabilities();
 loadAgentContract();

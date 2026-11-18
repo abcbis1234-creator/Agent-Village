@@ -58,7 +58,82 @@ Response:
 Every report is labeled `MANAGED LOCAL DEMO`. The verdict includes a decision, rationale, dissent/watch-outs, next actions, and confidence.
 
 ### Static files
-`GET /` serves `public/index.html`. `GET /manus-routes.json` serves the route manifest.
+`GET /` serves `public/index.html`. `GET /manus-routes.json` serves the route manifest. `GET /media/<file>` serves generated images.
+
+### `GET /api/providers`
+Reports media provider status. No secrets are returned.
+
+### `POST /api/media/generate`
+Approval-gated media generation. Body:
+- `kind` (`image` | `video`)
+- `prompt` (string)
+- `approved` (boolean)
+- `id` (approval id, required when `approved: true`)
+
+Without `approved`, returns `202` with an approval id. Approve it via `POST /api/media/approve` with `{ id }`, then re-post with `approved: true` and the same `id`.
+
+## Stable Diffusion (image generation)
+
+Agent Village ships with a **real Stable Diffusion adapter** (Automatic1111 WebUI `txt2img` API). It is provider-neutral and configured **only** through environment variables — no keys in code or the browser.
+
+### 1. Run a Stable Diffusion API
+
+The easiest path is Automatic1111 WebUI with the API enabled:
+
+```bash
+# example: Automatic1111 WebUI
+./webui.sh --api --listen
+# API is then available at http://127.0.0.1:7860
+```
+
+(ComfyUI users can point `SD_BASE_URL` at a compatible `/sdapi/v1/txt2img` endpoint.)
+
+### 2. Configure Agent Village
+
+```bash
+# required: base URL of the SD API
+export SD_BASE_URL="http://127.0.0.1:7860"
+# optional: bearer token if your SD API requires one
+export SD_API_KEY=""
+# optional: model label for display
+export SD_MODEL="stable-diffusion"
+npm start
+```
+
+Check status:
+
+```bash
+curl http://localhost:3000/api/providers
+```
+
+### 3. Generate
+
+```bash
+# 1) request approval
+curl -s -X POST http://localhost:3000/api/media/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"image","prompt":"a small isometric village at dusk"}'
+# -> 202 { "id": "media-...", "error": "approval required" }
+
+# 2) approve
+curl -s -X POST http://localhost:3000/api/media/approve \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"media-..."}'
+
+# 3) generate (approved)
+curl -s -X POST http://localhost:3000/api/media/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"image","prompt":"a small isometric village at dusk","approved":true,"id":"media-..."}'
+# -> 200 { "url": "/media/image-....png", "status": "generated" }
+```
+
+Or just use the **Image studio** card in the Workbench view.
+
+Generated files are written to `media/` (git-ignored) and served from `GET /media/<file>`.
+
+### Video
+
+Video generation is a documented adapter placeholder. Wire a video provider (e.g. AnimateDiff/ComfyUI or a hosted API) into `generateMedia()` behind the same server boundary and set `VIDEO_BASE_URL` + `VIDEO_PROVIDER_API_KEY`.
 
 ## Docker
 
@@ -75,7 +150,8 @@ Treat each accepted improvement as a checkpoint. Add new connectors behind expli
 
 ## Security
 
-- Static file serving rejects path traversal (`..` segments) and serves only regular files inside `public/`.
+- Static file serving rejects path traversal (`..` segments) and serves only regular files inside `public/` and `media/`.
 - All responses send `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a restrictive `Content-Security-Policy`.
 - Request bodies are capped at 20 KB.
-- No browser-side API keys or secrets.
+- No browser-side API keys or secrets. Provider credentials are read from environment variables only.
+- Media generation requires an explicit human approval gate.

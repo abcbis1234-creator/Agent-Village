@@ -11,6 +11,10 @@ build/
 .env.local
 .env.*.local
 
+# Generated media (Stable Diffusion output)
+media/*
+!media/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

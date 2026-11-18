@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig } from '../server.mjs';
 
 function request(port, path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
@@ -185,4 +185,14 @@ test('Provider health and media generation guards', async (t) => {
   // Approve unknown id should return 400
   const badApprove = await request(port, '/api/media/approve', 'POST', { id: 'does-not-exist' });
   assert.strictEqual(badApprove.status, 400);
+});
+
+test('Stable Diffusion adapter respects configuration', async () => {
+  const cfg = providerConfig.image;
+  if (!cfg.configured) {
+    await assert.rejects(() => generateImageStableDiffusion('a roblox scene'), /not configured/);
+  } else {
+    assert.ok(cfg.baseUrl, 'configured SD provider must have a base URL');
+  }
+  assert.strictEqual(cfg.provider, 'stable-diffusion');
 });

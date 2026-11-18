@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
+const mediaDir = join(root, 'media');
 const port = Number(process.env.PORT || 3000);
 
 const SECURITY_HEADERS = {
@@ -27,16 +28,21 @@ function rateLimitRun(ip) {
 }
 
 // Provider registry — credentials come ONLY from environment variables, never from code or browser.
-// Each provider declares whether it is configured and exposes a health check and generate function.
+// Stable Diffusion (Automatic1111 WebUI) is the default local image provider.
 const providerConfig = {
   image: {
-    name: process.env.IMAGE_PROVIDER_NAME || 'none',
-    configured: Boolean(process.env.IMAGE_PROVIDER_API_KEY),
+    provider: 'stable-diffusion',
+    baseUrl: process.env.SD_BASE_URL || '',
+    apiKey: process.env.SD_API_KEY || '',
+    model: process.env.SD_MODEL || 'stable-diffusion',
+    configured: Boolean(process.env.SD_BASE_URL),
     kind: 'image',
   },
   video: {
-    name: process.env.VIDEO_PROVIDER_NAME || 'none',
-    configured: Boolean(process.env.VIDEO_PROVIDER_API_KEY),
+    provider: process.env.VIDEO_PROVIDER_NAME || 'none',
+    baseUrl: process.env.VIDEO_BASE_URL || '',
+    apiKey: process.env.VIDEO_PROVIDER_API_KEY || '',
+    configured: Boolean(process.env.VIDEO_PROVIDER_API_KEY && process.env.VIDEO_BASE_URL),
     kind: 'video',
   },
 };
@@ -44,21 +50,49 @@ const mediaApprovalState = new Map(); // id -> { approved, mission, kind, prompt
 const auditLog = [];
 function audit(kind, detail) { auditLog.push({ at: new Date().toISOString(), kind, detail }); if (auditLog.length > 200) auditLog.shift(); }
 
-async function generateMedia(kind, prompt) {
-  const cfg = providerConfig[kind];
-  if (!cfg || !cfg.configured) throw new Error(`${kind} provider not configured`);
-  const keyEnv = kind === 'image' ? 'IMAGE_PROVIDER_API_KEY' : 'VIDEO_PROVIDER_API_KEY';
-  const key = process.env[keyEnv];
-  if (!key) throw new Error(`${kind} provider credentials missing`);
-  // Placeholder: real provider adapters go here. Never log or return the key.
-  audit(kind, `generate requested: ${prompt.slice(0, 80)}`);
-  return {
-    provider: cfg.name,
-    kind,
+async function ensureMediaDir() { try { await mkdir(mediaDir, { recursive: true }); } catch { /* ignore */ } }
+
+async function generateImageStableDiffusion(prompt, options = {}) {
+  const cfg = providerConfig.image;
+  if (!cfg.baseUrl) throw new Error('Stable Diffusion not configured (set SD_BASE_URL)');
+  const payload = {
     prompt,
-    status: 'accepted',
-    note: 'Provider adapter not implemented. Add an adapter behind this boundary to produce real media.',
+    negative_prompt: options.negativePrompt || 'blurry, low quality, watermark, text, deformed',
+    steps: options.steps || 30,
+    width: options.width || 1024,
+    height: options.height || 1024,
+    cfg_scale: options.cfgScale || 7,
+    sampler_name: options.sampler || 'DPM++ 2M Karras',
   };
+  let response;
+  try {
+    response = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(`Stable Diffusion request failed: ${error.message}`);
+  }
+  if (!response.ok) throw new Error(`Stable Diffusion error: HTTP ${response.status}`);
+  const data = await response.json();
+  const b64 = data.images && data.images[0];
+  if (!b64) throw new Error('Stable Diffusion returned no image');
+  await ensureMediaDir();
+  const filename = `image-${Date.now()}.png`;
+  await writeFile(join(mediaDir, filename), Buffer.from(b64, 'base64'));
+  audit('image', `generated ${filename} from prompt: ${prompt.slice(0, 80)}`);
+  return { provider: 'stable-diffusion', kind: 'image', prompt, status: 'generated', url: `/media/${filename}`, filename };
+}
+
+async function generateMedia(kind, prompt, options = {}) {
+  const cfg = providerConfig[kind];
+  if (!cfg) throw new Error(`unknown media kind: ${kind}`);
+  if (!cfg.configured) throw new Error(`${kind} provider not configured`);
+  if (kind === 'image') return generateImageStableDiffusion(prompt, options);
+  // Video adapter placeholder: implement behind this boundary (e.g. AnimateDiff/ComfyUI/Runway).
+  audit(kind, `generate requested: ${prompt.slice(0, 80)}`);
+  return { provider: cfg.provider, kind, prompt, status: 'accepted', note: 'Video adapter not implemented. Add an adapter behind this boundary to produce real video.' };
 }
 
 const capabilities = [
@@ -173,14 +207,15 @@ async function runTask(body) {
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': data.length }); res.end(data); }
-function staticFile(pathname, res) { const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\//, ''); if (safe.includes('..')) return send(res, 403, { error: 'forbidden' }); const file = resolve(publicDir, safe); if (file !== publicDir && !file.startsWith(publicDir + sep)) return send(res, 403, { error: 'forbidden' }); return stat(file).then((st) => { if (!st.isFile()) return send(res, 404, { error: 'not_found' }); return readFile(file); }).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
+function serveFrom(baseDir, pathname, res) { const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\//, ''); if (safe.includes('..')) return send(res, 403, { error: 'forbidden' }); const file = resolve(baseDir, safe); if (file !== baseDir && !file.startsWith(baseDir + sep)) return send(res, 403, { error: 'forbidden' }); return stat(file).then((st) => { if (!st.isFile()) return send(res, 404, { error: 'not_found' }); return readFile(file); }).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
+function staticFile(pathname, res) { return serveFrom(publicDir, pathname, res); }
 
 async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const ip = req.socket.remoteAddress || 'unknown';
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
-  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, name: cfg.name, configured: cfg.configured })) }); }
+  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })) }); }
   if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run', providers: 'GET /api/providers', media: 'POST /api/media/generate', approve: 'POST /api/media/approve' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
   if (req.method === 'GET' && url.pathname === '/manus-routes.json') { logRequest(req, 200); return staticFile('/manus-routes.json', res); }
   if (req.method === 'POST' && url.pathname === '/api/run') {
@@ -207,7 +242,7 @@ async function handleRequest(req, res) {
       }
       const entry = mediaApprovalState.get(body.id);
       if (!entry || !entry.approved || entry.kind !== kind || entry.prompt !== prompt) throw new Error('no valid approval for this generation');
-      const result = await generateMedia(kind, prompt);
+      const result = await generateMedia(kind, prompt, body.options || {});
       entry.approved = false; // one-time use
       logRequest(req, 200);
       return send(res, 200, result);
@@ -225,6 +260,7 @@ async function handleRequest(req, res) {
       return send(res, 200, { approved: true, id: body.id, kind: entry.kind, prompt: entry.prompt });
     } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
   }
+  if (req.method === 'GET' && url.pathname.startsWith('/media/')) { logRequest(req, 200); return serveFrom(mediaDir, url.pathname.slice('/media'.length), res); }
   if (req.method === 'GET') { return staticFile(url.pathname, res); }
   logRequest(req, 404);
   return send(res, 404, { error: 'not_found' });
@@ -247,4 +283,4 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, providerConfig, mediaApprovalState, auditLog, generateMedia };
+export { server, port, publicDir, mediaDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion };
