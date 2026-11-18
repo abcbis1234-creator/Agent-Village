@@ -8,6 +8,11 @@ const storePath = join(process.env.SHORTS_STUDIO_DATA_DIR || join(root, 'data'),
 let writeQueue = Promise.resolve();
 
 const editableFields = new Set(['title', 'topic', 'audience', 'targetSeconds', 'script', 'sources', 'scenes']);
+const toon2dSets = new Set(['street', 'kitchen', 'office', 'shop_counter', 'planet_shop', 'ship_deck', 'desert_rails', 'castle_hall', 'field', 'town_top', 'prehistoric']);
+const toon2dMoods = new Set(['day', 'interior', 'night', 'dream', 'golden', 'sunset', 'dawn']);
+const toon2dCharacters = new Set(['worker', 'boss', 'cop', 'cook', 'knight', 'king', 'scientist', 'cashier', 'sailor', 'caveman', 'kid', 'alien']);
+const toon2dPoses = new Set(['stand', 'walk', 'run', 'point', 'shrug', 'arms_crossed', 'hips', 'hold', 'think', 'wave', 'cheer', 'sit']);
+const toon2dExpressions = new Set(['neutral', 'smug', 'angry', 'shocked', 'laughing', 'scared', 'sad', 'sly', 'happy', 'deadpan']);
 
 function cleanText(value, field, max) {
   if (typeof value !== 'string') throw new Error(`${field} must be text`);
@@ -49,7 +54,17 @@ export function validateProjectInput(input, partial = false) {
       const narration = cleanText(scene.narration, `scene ${index + 1} narration`, 800);
       const visual = cleanText(scene.visual, `scene ${index + 1} visual`, 800);
       if (!Number.isInteger(scene.durationSeconds) || scene.durationSeconds < 1 || scene.durationSeconds > 15) throw new Error('scene durationSeconds must be an integer from 1 to 15');
-      return { id: typeof scene.id === 'string' && scene.id ? scene.id : randomUUID(), narration, visual, durationSeconds: scene.durationSeconds };
+      const set = scene.set ?? 'field';
+      const mood = scene.mood ?? 'day';
+      const characterType = scene.characterType ?? 'scientist';
+      const pose = scene.pose ?? 'stand';
+      const expression = scene.expression ?? 'neutral';
+      if (!toon2dSets.has(set)) throw new Error(`scene ${index + 1} has an unsupported toon2d set`);
+      if (!toon2dMoods.has(mood)) throw new Error(`scene ${index + 1} has an unsupported toon2d mood`);
+      if (!toon2dCharacters.has(characterType)) throw new Error(`scene ${index + 1} has an unsupported toon2d character`);
+      if (!toon2dPoses.has(pose)) throw new Error(`scene ${index + 1} has an unsupported toon2d pose`);
+      if (!toon2dExpressions.has(expression)) throw new Error(`scene ${index + 1} has an unsupported toon2d expression`);
+      return { id: typeof scene.id === 'string' && scene.id ? scene.id : randomUUID(), narration, visual, durationSeconds: scene.durationSeconds, set, mood, characterType, pose, expression };
     });
   } else if (!partial) result.scenes = [];
   for (const key of Object.keys(input)) if (!editableFields.has(key)) throw new Error(`field is not editable: ${key}`);
