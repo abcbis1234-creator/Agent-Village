@@ -6,7 +6,23 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
 const mediaDir = join(root, 'media');
+const dataDir = join(root, 'data');
 const port = Number(process.env.PORT || 3000);
+
+// Persistent memory: corrections and knowledge notes. This is NOT model training.
+let feedbackStore = [];
+let knowledgeStore = [];
+function normalizeMission(value) { return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+async function loadStores() {
+  try { await mkdir(dataDir, { recursive: true }); } catch { /* ignore */ }
+  try { feedbackStore = JSON.parse(await readFile(join(dataDir, 'feedback.json'), 'utf8')); } catch { feedbackStore = []; }
+  try { knowledgeStore = JSON.parse(await readFile(join(dataDir, 'knowledge.json'), 'utf8')); } catch { knowledgeStore = []; }
+  if (!Array.isArray(feedbackStore)) feedbackStore = [];
+  if (!Array.isArray(knowledgeStore)) knowledgeStore = [];
+}
+async function saveFeedback() { try { await mkdir(dataDir, { recursive: true }); await writeFile(join(dataDir, 'feedback.json'), JSON.stringify(feedbackStore, null, 2)); } catch { /* ignore */ } }
+async function saveKnowledge() { try { await mkdir(dataDir, { recursive: true }); await writeFile(join(dataDir, 'knowledge.json'), JSON.stringify(knowledgeStore, null, 2)); } catch { /* ignore */ } }
+await loadStores();
 
 const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
@@ -159,6 +175,10 @@ function countKeyword(text, word) {
 function routeMission(mission, requested = 'auto') {
   if (requested && requested !== 'auto' && capabilities.some((item) => item.key === requested)) return requested;
   const text = mission.toLowerCase();
+  // Learned corrections take precedence over heuristics.
+  const norm = normalizeMission(mission);
+  const learned = feedbackStore.find((f) => normalizeMission(f.mission) === norm && capabilities.some((c) => c.key === f.expectedCapability));
+  if (learned) return learned.expectedCapability;
   // Explicit generalist intent wins over single-keyword matches.
   if (['cross-domain', 'open-ended', 'jack of all trades', 'generalist', 'multi-domain'].some((p) => text.includes(p))) return 'generalist';
   let best = null;
@@ -229,7 +249,14 @@ async function runTask(body) {
   };
   const decision = decisionTemplates[key] || `Proceed with a bounded first slice for "${mission}".`;
   const confidenceLevels = { generalist: 'high', reasoning: 'high', multimodal: 'medium', agentic: 'medium', long_context: 'medium' };
-  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
+  const missionTokens = new Set(normalizeMission(mission).split(/\W+/).filter((w) => w.length > 3));
+  const matchedKnowledge = knowledgeStore.filter((k) => {
+    const tokens = normalizeMission(`${k.title} ${k.content}`).split(/\W+/).filter((w) => w.length > 3);
+    return tokens.some((w) => missionTokens.has(w));
+  }).slice(0, 3);
+  const del = deliverable(mission, key, info);
+  if (matchedKnowledge.length) del.sections = [...del.sections, { name: 'Knowledge', content: matchedKnowledge.map((k) => `${k.title}: ${k.content}`).join(' | ') }];
+  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
@@ -243,7 +270,42 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
   if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })) }); }
-  if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run', providers: 'GET /api/providers', media: 'POST /api/media/generate', approve: 'POST /api/media/approve' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
+  if (req.method === 'GET' && url.pathname === '/api/feedback') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.slice(-50) }); }
+  if (req.method === 'POST' && url.pathname === '/api/feedback') {
+    try {
+      let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const mission = cleanMission(body.mission);
+      const expectedCapability = body.expectedCapability;
+      if (!expectedCapability || expectedCapability === 'auto' || !capabilities.some((c) => c.key === expectedCapability)) throw new Error('expectedCapability must be a specific capability key');
+      const entry = { id: `fb-${Date.now()}`, mission, expectedCapability, note: typeof body.note === 'string' ? body.note.slice(0, 300) : '', at: new Date().toISOString() };
+      feedbackStore.push(entry);
+      if (feedbackStore.length > 500) feedbackStore = feedbackStore.slice(-500);
+      await saveFeedback();
+      logRequest(req, 200);
+      return send(res, 200, { ok: true, learned: entry });
+    } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/knowledge') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Stored notes, retrieved by keyword. Not model training.', knowledge: knowledgeStore.slice(-50) }); }
+  if (req.method === 'POST' && url.pathname === '/api/knowledge') {
+    try {
+      let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const title = typeof body.title === 'string' ? body.title.trim() : '';
+      const content = typeof body.content === 'string' ? body.content.trim() : '';
+      if (!title) throw new Error('title is required');
+      if (!content) throw new Error('content is required');
+      if (title.length > 200) throw new Error('title must be 200 characters or fewer');
+      if (content.length > 2000) throw new Error('content must be 2000 characters or fewer');
+      const entry = { id: `kn-${Date.now()}`, title, content, at: new Date().toISOString() };
+      knowledgeStore.push(entry);
+      if (knowledgeStore.length > 500) knowledgeStore = knowledgeStore.slice(-500);
+      await saveKnowledge();
+      logRequest(req, 200);
+      return send(res, 200, { ok: true, entry });
+    } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run', providers: 'GET /api/providers', media: 'POST /api/media/generate', approve: 'POST /api/media/approve', feedback: 'GET/POST /api/feedback', knowledge: 'GET/POST /api/knowledge' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
   if (req.method === 'GET' && url.pathname === '/manus-routes.json') { logRequest(req, 200); return staticFile('/manus-routes.json', res); }
   if (req.method === 'POST' && url.pathname === '/api/run') {
     if (!rateLimitRun(ip)) { logRequest(req, 429); return send(res, 429, { error: 'rate limit exceeded', retry_after: Math.ceil(RUN_RATE_LIMIT.windowMs / 1000) }); }
@@ -312,4 +374,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge };

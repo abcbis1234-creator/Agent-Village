@@ -15,6 +15,10 @@ build/
 media/*
 !media/.gitkeep
 
+# Persistent memory (feedback + knowledge)
+data/*
+!data/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

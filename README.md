@@ -135,6 +135,23 @@ Generated files are written to `media/` (git-ignored) and served from `GET /medi
 
 Video generation is a documented adapter placeholder. Wire a video provider (e.g. AnimateDiff/ComfyUI or a hosted API) into `generateMedia()` behind the same server boundary and set `VIDEO_BASE_URL` + `VIDEO_PROVIDER_API_KEY`.
 
+## Learning and memory (what it can and cannot do)
+
+Agent Village has **no trained model**. Routing is deterministic keyword scoring plus templates, so there is nothing to "retrain." What it supports instead is a **persistent memory layer**:
+
+- `POST /api/feedback` — record a correction: `{ mission, expectedCapability, note? }`. The router checks learned corrections first (exact normalized mission match) before heuristic routing.
+- `GET /api/feedback` — list recent corrections.
+- `POST /api/knowledge` — store a note: `{ title, content }`. Matching notes are injected into deliverables as a `Knowledge` section and listed in `knowledge` on the run result.
+- `GET /api/knowledge` — list stored notes.
+
+Notes and corrections persist to `data/feedback.json` and `data/knowledge.json` (git-ignored) and survive restarts. The **Teach the village** card in the Workbench exposes both.
+
+### Not supported, by design
+
+- **Model retraining** — there is no ML model in this project.
+- **Autonomous code modification** — the agent never rewrites its own code. Improvements go through a reviewed Git change (`AGENT_HANDOFF.md`, `AGENTS.md`).
+- **Unattended automation** — consequential actions require an explicit human approval gate.
+
 ## Docker
 
 ```bash

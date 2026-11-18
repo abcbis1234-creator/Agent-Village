@@ -454,6 +454,72 @@ if (generateImageBtn) {
     }
   });
 }
+async function populateFeedbackCapabilities() {
+  try {
+    const response = await fetch('/api/capabilities');
+    const payload = await response.json();
+    const select = $('#feedback-capability');
+    if (!select) return;
+    select.textContent = '';
+    (payload.capabilities || []).filter((c) => c.key !== 'auto').forEach((c) => {
+      const opt = document.createElement('option');
+      opt.value = c.key;
+      opt.textContent = c.name;
+      select.appendChild(opt);
+    });
+  } catch { /* ignore */ }
+}
+
+function showTeach(message) {
+  const el = $('#teach-result');
+  if (!el) return;
+  el.textContent = '';
+  const small = document.createElement('small');
+  small.className = 'muted';
+  small.textContent = message;
+  el.appendChild(small);
+}
+
+const addKnowledgeBtn = $('#add-knowledge');
+if (addKnowledgeBtn) {
+  addKnowledgeBtn.addEventListener('click', async () => {
+    const titleEl = $('#knowledge-title');
+    const contentEl = $('#knowledge-content');
+    const title = titleEl ? titleEl.value.trim() : '';
+    const content = contentEl ? contentEl.value.trim() : '';
+    if (!title || !content) { showTeach('Title and content are required.'); return; }
+    try {
+      const res = await fetch('/api/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content }) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || 'Failed');
+      showTeach(`Saved knowledge: ${out.entry.title}`);
+      addActivity('Knowledge saved', out.entry.title, 'done');
+      if (titleEl) titleEl.value = '';
+      if (contentEl) contentEl.value = '';
+    } catch (error) { showTeach(error.message); }
+  });
+}
+
+const addFeedbackBtn = $('#add-feedback');
+if (addFeedbackBtn) {
+  addFeedbackBtn.addEventListener('click', async () => {
+    const missionEl = $('#feedback-mission');
+    const capEl = $('#feedback-capability');
+    const mission = missionEl ? missionEl.value.trim() : '';
+    const expectedCapability = capEl ? capEl.value : '';
+    if (!mission || !expectedCapability) { showTeach('Mission and target capability are required.'); return; }
+    try {
+      const res = await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mission, expectedCapability }) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || 'Failed');
+      showTeach(`Learned: "${out.learned.mission}" → ${out.learned.expectedCapability}`);
+      addActivity('Route correction saved', `${out.learned.mission} → ${out.learned.expectedCapability}`, 'done');
+      if (missionEl) missionEl.value = '';
+    } catch (error) { showTeach(error.message); }
+  });
+}
+
 loadCapabilities();
 loadAgentContract();
 loadProviders();
+populateFeedbackCapabilities();

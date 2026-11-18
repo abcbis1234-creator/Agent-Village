@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server, generateImageStableDiffusion, providerConfig, runRateState } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge } from '../server.mjs';
 
 let port;
 
@@ -207,4 +207,46 @@ test('Stable Diffusion adapter respects configuration', async () => {
   } else {
     assert.ok(cfg.baseUrl, 'configured SD provider must have a base URL');
   }
+});
+
+test('Feedback corrections drive routing; knowledge injects into deliverables', async () => {
+  const mission = 'compose a haiku about the midnight sea';
+  const cleanupFeedback = () => {
+    for (let i = feedbackStore.length - 1; i >= 0; i -= 1) {
+      if (String(feedbackStore[i].mission).toLowerCase().includes('midnight sea')) feedbackStore.splice(i, 1);
+    }
+  };
+  cleanupFeedback();
+
+  const fb = await request('/api/feedback', 'POST', { mission, expectedCapability: 'creative', note: 'haiku is creative work' });
+  assert.strictEqual(fb.status, 200);
+  assert.ok(fb.body.learned && fb.body.learned.id);
+
+  const after = await request('/api/run', 'POST', { mission, capability: 'auto', rounds: 1 });
+  assert.strictEqual(after.status, 200);
+  assert.strictEqual(after.body.capability.key, 'creative');
+
+  const bad = await request('/api/feedback', 'POST', { mission: 'some other mission', expectedCapability: 'auto' });
+  assert.strictEqual(bad.status, 400);
+
+  const kn = await request('/api/knowledge', 'POST', { title: 'Village brand voice', content: 'Always use a warm playful tone for the village brand.' });
+  assert.strictEqual(kn.status, 200);
+  assert.ok(kn.body.entry && kn.body.entry.id);
+
+  const run = await request('/api/run', 'POST', { mission: 'write a village brand description', capability: 'writing', rounds: 1 });
+  assert.strictEqual(run.status, 200);
+  assert.ok(run.body.deliverable.sections.some((s) => s.name === 'Knowledge'), 'deliverable should include matched knowledge');
+  assert.ok(Array.isArray(run.body.knowledge) && run.body.knowledge.length > 0);
+
+  const list = await request('/api/knowledge');
+  assert.ok(Array.isArray(list.body.knowledge));
+  assert.ok(list.body.knowledge.some((k) => k.title === 'Village brand voice'));
+
+  // Cleanup persistent test data so runs stay repeatable.
+  cleanupFeedback();
+  for (let i = knowledgeStore.length - 1; i >= 0; i -= 1) {
+    if (knowledgeStore[i].title === 'Village brand voice') knowledgeStore.splice(i, 1);
+  }
+  await saveFeedback();
+  await saveKnowledge();
 });
