@@ -18,3 +18,17 @@ The runtime listens on `PORT` and defaults to 3000. The frontend is served from 
 ## Upgrade posture
 
 Treat each accepted improvement as a checkpoint. Add new connectors behind explicit capability modules, keep user approval visible for consequential actions, and do not turn on unattended automation merely because a connector exists.
+
+## Supervised code evolution
+
+The code-evolution API accepts proposed unified diffs and stores them for review; it does not execute patches or write source files. Every proposal is authenticated with `MODEL_GATE_TOKEN`, limited to allowlisted `studio/`, `public/`, `test/`, and `docs/` paths, and checked for path traversal, sensitive paths, binary content, and patch/header mismatches.
+
+- `GET /api/evolution/proposals` lists stored proposals.
+- `POST /api/evolution/proposals` accepts `{ "mission", "rationale", "files", "patch", "author" }`.
+- `POST /api/evolution/review` accepts `{ "proposalId", "decision": "approve" | "reject", "reviewer", "note" }`.
+
+An approval means **approved for manual application only**. It is not a claim that the patch is correct, secure, or tested. A maintainer must inspect the diff, apply it on a separate Git branch, run the full checks, and open a pull request. The service never merges or deploys code.
+
+## Learning and model training boundary
+
+The existing learning loop stores feedback and human-approved prompt guidance; it does not change model weights. Fine-tuning is not enabled by this API. Before any future training pipeline is added, build a consent-aware dataset review/export step, benchmark candidate models against a fixed baseline, and require explicit human promotion and rollback.
