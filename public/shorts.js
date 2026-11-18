@@ -12,6 +12,10 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(payload.error || 'Request failed');
   return payload;
 }
+function reviewerHeaders() {
+  const token = $('#review-token')?.value.trim();
+  return token ? { 'x-review-token': token } : {};
+}
 async function updateCacheMetrics() {
   const pill = $('#cache-pill');
   if (!pill) return;
@@ -137,7 +141,7 @@ async function action(name, note = '') {
   try {
     if (!$('#project-id').value) await saveProject();
     const id = $('#project-id').value;
-    const { project } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/${name}`, { method: 'POST', body: JSON.stringify({ note }) });
+    const { project } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/${name}`, { method: 'POST', headers: ['approve', 'reject'].includes(name) ? reviewerHeaders() : {}, body: JSON.stringify({ note }) });
     showProject(project);
     await refreshProjects(project.id);
     message(name === 'submit' ? 'Submitted for human review.' : name === 'approve' ? 'Project approved. Prepare the Toon2D render, then create the final video.' : 'Changes requested. Edit the draft and submit again.');
@@ -157,7 +161,7 @@ $('#composite-video').addEventListener('click', async () => {
     if (!id || currentProject?.status !== 'approved') throw new Error('Approve the project before creating its final video.');
     button.disabled = true;
     button.textContent = 'Compositing video…';
-    const { composition } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/composite`, { method: 'POST', body: JSON.stringify({}) });
+    const { composition } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/composite`, { method: 'POST', headers: reviewerHeaders(), body: JSON.stringify({}) });
     message(`Final video created: ${composition.outputPath}. Pexels footage used in ${composition.footageScenes} scene(s); ${composition.fallbackScenes} scene(s) kept their Toon2D backgrounds.`);
   } catch (error) {
     message(error.message, true);
@@ -170,7 +174,7 @@ $('#prepare-render').addEventListener('click', async () => {
   try {
     const id = $('#project-id').value;
     if (!id) throw new Error('Save and approve a project first.');
-    const { preparation } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/prepare-render`, { method: 'POST', body: JSON.stringify({}) });
+    const { preparation } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/prepare-render`, { method: 'POST', headers: reviewerHeaders(), body: JSON.stringify({}) });
     message(`Toon2D project prepared: ${preparation.durationSeconds}s, ${preparation.sceneCount} scenes, ${preparation.wordCount} words. No MP4 has been rendered yet.`);
   } catch (error) { message(error.message, true); }
 });
