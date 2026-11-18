@@ -206,7 +206,7 @@ async function runTask(body) {
   return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'calibrated', calibrated: true } };
 }
 
-const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
 function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': data.length }); res.end(data); }
 function serveFrom(baseDir, pathname, res) { const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\//, ''); if (safe.includes('..')) return send(res, 403, { error: 'forbidden' }); const file = resolve(baseDir, safe); if (file !== baseDir && !file.startsWith(baseDir + sep)) return send(res, 403, { error: 'forbidden' }); return stat(file).then((st) => { if (!st.isFile()) return send(res, 404, { error: 'not_found' }); return readFile(file); }).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
 function staticFile(pathname, res) { return serveFrom(publicDir, pathname, res); }
@@ -238,6 +238,7 @@ async function handleRequest(req, res) {
       if (!body.approved) {
         const id = `media-${Date.now()}`;
         mediaApprovalState.set(id, { approved: false, mission: body.mission || '', kind, prompt, at: new Date().toISOString() });
+        if (mediaApprovalState.size > 100) { const oldest = mediaApprovalState.keys().next().value; mediaApprovalState.delete(oldest); }
         logRequest(req, 202);
         return send(res, 202, { error: 'approval required', id, kind, prompt, note: 'Call POST /api/media/approve with this id to authorize generation.' });
       }
