@@ -53,6 +53,7 @@ async function loadCache() {
       const entries = parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object'
         ? parsed.entries : parsed;
       const now = nowImplementation();
+      if (Array.isArray(parsed?.requests)) requestTimestamps = parsed.requests.filter((time) => Number.isFinite(time) && now - time < HOUR_MS);
       for (const [key, value] of Object.entries(entries || {})) {
         if (!value || typeof value !== 'object' || !Number.isFinite(value.fetchedAt)) continue;
         const staleUntil = value.staleUntil ?? value.fetchedAt + STALE_TTL_MS;
@@ -77,7 +78,8 @@ function persistCache() {
   const snapshot = {
     version: 1,
     savedAt: nowImplementation(),
-    entries: Object.fromEntries([...cache.entries()].map(([key, entry]) => [key, entry]))
+    entries: Object.fromEntries([...cache.entries()].map(([key, entry]) => [key, entry])),
+    requests: requestTimestamps.filter((time) => nowImplementation() - time < HOUR_MS)
   };
   const operation = persistenceQueue.then(async () => {
     await mkdir(dirname(CACHE_FILE), { recursive: true });
@@ -116,6 +118,7 @@ async function waitForRequestSlot() {
   const startedAt = nowImplementation();
   lastRequestAt = startedAt;
   requestTimestamps.push(startedAt);
+  await persistCache();
 }
 
 function scheduleRequest(task) {
@@ -162,8 +165,9 @@ export async function fetchBackgroundVideo(query) {
   if (existing && existing.expiresAt > now) return existing.data;
   if (inFlight.has(cacheKey)) return inFlight.get(cacheKey);
 
+  const fallback = existing && existing.staleUntil > now ? existing.data : null;
   const apiKey = process.env.PEXELS_API_KEY;
-  if (!apiKey) return existing?.data || null;
+  if (!apiKey) return fallback;
 
   const request = (async () => {
     try {
@@ -175,18 +179,18 @@ export async function fetchBackgroundVideo(query) {
       }));
       if (response.status === 429) {
         console.warn('[Pexels API] HTTP 429; using stale cache or native background fallback.');
-        return existing?.data || null;
+        return fallback;
       }
       if (!response.ok) {
         console.warn(`[Pexels API] Request failed (${response.status}); using stale cache or native background fallback.`);
-        return existing?.data || null;
+        return fallback;
       }
       const video = chooseVideo(await response.json());
       await storeEntry(cacheKey, video);
       return video;
     } catch (error) {
       console.warn('[Pexels API] Search failed; using stale cache or native background fallback:', error.message);
-      return existing?.data || null;
+      return fallback;
     }
   })();
   inFlight.set(cacheKey, request);
