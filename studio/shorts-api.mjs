@@ -8,7 +8,8 @@ import {
   updateShortsProject
 } from './shorts-studio.mjs';
 import { prepareToon2dProject } from './toon2d-adapter.mjs';
-import { getCacheStats, purgeCache } from './pexels-service.mjs';
+import { fetchBackgroundVideo, getCacheStats, purgeCache } from './pexels-service.mjs';
+import { compositePexelsFootage } from './pexels-compositor.mjs';
 
 function send(res, status, body) {
   const data = Buffer.from(JSON.stringify(body));
@@ -49,7 +50,7 @@ export async function handleShortsApi(req, res, url) {
       return send(res, 201, { project: await createShortsProject(await readBody(req)) }), true;
     }
 
-    const match = url.pathname.match(/^\/api\/shorts\/projects\/([a-f0-9-]+)(?:\/(submit|approve|reject|prepare-render))?$/i);
+    const match = url.pathname.match(/^\/api\/shorts\/projects\/([a-f0-9-]+)(?:\/(submit|approve|reject|prepare-render|composite))?$/i);
     if (!match) {
       send(res, 404, { error: 'shorts_endpoint_not_found' });
       return true;
@@ -68,6 +69,25 @@ export async function handleShortsApi(req, res, url) {
     if (req.method === 'POST' && action) {
       const body = await readBody(req);
       const note = typeof body.note === 'string' ? body.note : '';
+      if (action === 'composite') {
+        const sourceProject = await getShortsProject(id);
+        if (!sourceProject) {
+          send(res, 404, { error: 'project_not_found' });
+          return true;
+        }
+        if (sourceProject.status !== 'approved') {
+          send(res, 409, { error: 'project_must_be_approved_before_compositing' });
+          return true;
+        }
+        const footageOverrides = [];
+        for (const scene of sourceProject.scenes) {
+          const query = scene.brollQuery || scene.visual || sourceProject.topic;
+          footageOverrides.push(await fetchBackgroundVideo(query));
+        }
+        const composition = await compositePexelsFootage(sourceProject, { footageOverrides });
+        send(res, 200, { composition });
+        return true;
+      }
       if (action === 'prepare-render') {
         const sourceProject = await getShortsProject(id);
         if (!sourceProject) {
