@@ -28,7 +28,7 @@ export function isAllowedPexelsVideoUrl(value) {
   }
 }
 
-export function planCompositeSegments(plan, projectScenes) {
+export function planCompositeSegments(plan, projectScenes, footageOverrides = []) {
   if (!plan || !Array.isArray(plan.scenes) || !Array.isArray(projectScenes)) {
     throw new Error('A Toon2D plan and matching project scenes are required');
   }
@@ -43,7 +43,7 @@ export function planCompositeSegments(plan, projectScenes) {
       throw new Error('Toon2D scene timings are invalid or overlap');
     }
     previousEnd = end;
-    const footage = projectScenes[index]?.footage;
+    const footage = footageOverrides[index] || projectScenes[index]?.footage;
     return {
       index,
       start,
@@ -132,7 +132,7 @@ export async function compositePexelsFootage(project, options = {}) {
   const planPath = join(projectDir, 'plan.json');
   await stat(baseVideo).catch(() => { throw new Error('Toon2D final.mp4 is missing. Render all chunks and run the Toon2D join step first.'); });
   const plan = JSON.parse(await readFile(planPath, 'utf8'));
-  const segments = planCompositeSegments(plan, project.scenes);
+  const segments = planCompositeSegments(plan, project.scenes, options.footageOverrides || []);
   const ffmpeg = await resolveFfmpeg(options);
   const workDir = join(projectDir, 'pexels-composite');
   await mkdir(workDir, { recursive: true });
