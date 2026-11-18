@@ -1,0 +1,51 @@
+.shorts-shell { min-height: 100vh; }
+.shorts-main { max-width: 1440px; margin: 0 auto; padding: 48px 5vw 72px; }
+.shorts-hero { max-width: 760px; margin: 0 0 34px; }
+.shorts-hero h1 { font-size: clamp(2.4rem, 5vw, 4.4rem); margin: 8px 0 12px; letter-spacing: -.05em; }
+.shorts-hero > p:not(.eyebrow) { color: var(--muted, #aaa); line-height: 1.6; }
+.shorts-status { display: inline-flex; margin-top: 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 8px 12px; color: #d9c9ff; font-size: .78rem; }
+.shorts-layout { display: grid; grid-template-columns: minmax(220px, 290px) minmax(0, 1fr); gap: 22px; align-items: start; }
+.shorts-sidebar, .shorts-editor { border: 1px solid rgba(255,255,255,.12); border-radius: 18px; background: rgba(18,19,29,.78); padding: 22px; }
+.shorts-sidebar-head, .editor-heading, .section-head, .repeat-card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.shorts-sidebar-head h2, .editor-heading h2 { margin: 0; }
+.shorts-sidebar-head .assign-button, .editor-actions .assign-button { border: 0; cursor: pointer; }
+.project-list { display: grid; gap: 9px; margin-top: 18px; }
+.project-row { display: grid; gap: 5px; text-align: left; padding: 13px; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(255,255,255,.035); color: inherit; cursor: pointer; }
+.project-row.selected { border-color: #b69aff; background: rgba(182,154,255,.1); }
+.project-row small { color: #a9a6b5; }
+.shorts-editor { min-width: 0; }
+.editor-heading { margin-bottom: 24px; }
+.status-pill { border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 7px 11px; font-size: .72rem; letter-spacing: .08em; }
+.shorts-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+.shorts-editor label { display: grid; gap: 7px; color: #ddd9e8; font-size: .84rem; margin-bottom: 15px; }
+.shorts-editor input, .shorts-editor textarea, .shorts-editor select { width: 100%; border: 1px solid rgba(255,255,255,.15); border-radius: 10px; padding: 11px 12px; color: #f7f5fb; background: #171722; font: inherit; outline: none; }
+.shorts-editor input:focus, .shorts-editor textarea:focus, .shorts-editor select:focus { border-color: #b69aff; }
+.wide-label { margin-top: 3px; }
+.section-head { margin: 28px 0 14px; align-items: flex-end; }
+.section-head h3 { margin: 0 0 5px; }
+.section-head p { margin: 0; color: #a9a6b5; font-size: .82rem; line-height: 1.5; }
+.outline-button { cursor: pointer; }
+.repeat-list { display: grid; gap: 12px; }
+.repeat-card { border: 1px solid rgba(255,255,255,.11); border-radius: 13px; padding: 15px; background: rgba(255,255,255,.025); }
+.repeat-card-head { margin-bottom: 12px; }
+.remove-row { color: #ffb5c0; border: 0; background: transparent; cursor: pointer; }
+.verify-check { display: flex !important; align-items: center; grid-template-columns: auto 1fr; }
+.verify-check input { width: auto; }
+.editor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+.editor-actions button:disabled { opacity: .35; cursor: not-allowed; }
+.editor-message { color: #bcb2d5; font-size: .84rem; min-height: 1.4em; }
+.editor-message.error { color: #ff9fac; }
+@media (max-width: 900px) { .shorts-layout { grid-template-columns: 1fr; } .project-list { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 560px) { .shorts-main { padding: 30px 16px 48px; } .shorts-fields, .project-list { grid-template-columns: 1fr; } .section-head { align-items: flex-start; flex-direction: column; } .shorts-editor, .shorts-sidebar { padding: 16px; } }
+
+.scene-render-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.scene-render-fields label { margin-bottom: 8px; }
+@media (max-width: 760px) { .scene-render-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .scene-render-fields { grid-template-columns: 1fr; } }
+
+.topbar-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+#cache-pill { white-space: nowrap; letter-spacing: 0; }
+@media (max-width: 560px) { .topbar-actions { gap: 7px; } #cache-pill { font-size: .65rem; padding: 6px 8px; } }
+
+.review-token-field { max-width: 420px; margin-top: 24px; }
+.review-token-field input { letter-spacing: .08em; }

@@ -1,0 +1,5 @@
+.agent-village/
+.env
+.env.*
+!.env.example
+node_modules/

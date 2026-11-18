@@ -12,7 +12,7 @@
     <header class="topbar">
       <a class="brand" href="/" aria-label="Agent Village home"><span class="brand-icon"><i></i><i></i><b></b></span><span><strong>AGENT VILLAGE</strong><small>autonomous work, made visible</small></span></a>
       <div class="view-toggle" role="tablist" aria-label="View mode"><button class="view-tab active" data-view="town" role="tab">Town</button><button class="view-tab" data-view="station" role="tab">Station</button><button class="view-tab" data-view="workbench" role="tab">Workbench</button></div>
-      <div class="live-pill"><span></span> agents working <b id="agent-live-count">5</b></div>
+      <a class="outline-button" href="/shorts.html">Shorts Studio ↗</a><div class="live-pill"><span></span> agents working <b id="agent-live-count">5</b></div>
     </header>
 
     <main>
@@ -48,6 +48,32 @@
         </div>
       </section>
 
+      <section class="model-council" id="model-council">
+        <div><p class="eyebrow">Live model council / explicit provider calls</p><h2>Connect the five agents to real models</h2><p class="model-note">Each role makes a real model request. Ollama is local. Hosted providers may cost money. No provider is called until you submit this form.</p></div>
+        <form id="council-form">
+          <label>Mission<textarea id="council-mission" maxlength="1200" required placeholder="Describe the task for the council"></textarea></label>
+          <div class="model-grid">
+            <label>Nova · Planner<select data-role="nova"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Atlas · Architect<select data-role="atlas"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Lyra · Research<select data-role="lyra"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Forge · Builder<select data-role="forge"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+            <label>Echo · Independent reviewer<select data-role="echo"><option value="ollama">Ollama · local</option><option value="openai">OpenAI · API (paid/usage-based)</option><option value="anthropic">Claude · API (paid/usage-based)</option><option value="gemini">Gemini · API (free tier may be limited)</option></select></label>
+          </div>
+          <label>Server access token<input id="council-token" type="password" autocomplete="off" maxlength="256" placeholder="MODEL_GATE_TOKEN configured by server administrator" required></label>
+          <button class="assign-button" id="run-live-council" type="submit">Run live council ↗</button>
+        </form>
+        <div id="council-results" aria-live="polite"><p class="muted">No live model run yet. Existing demo council remains separate.</p></div>
+      </section>
+      <section class="learning-console" id="learning-console">
+        <div class="learning-heading"><div><p class="eyebrow">Learning loop / supervised memory</p><h2>Improve from reviewed outcomes</h2><p class="model-note">Submit feedback after a live council run. Suggestions are evaluated, but only a human-approved proposal becomes active team guidance. Every approved version can be rolled back.</p></div><button class="outline-button" id="refresh-learning" type="button">Refresh history</button></div>
+        <form id="learning-feedback-form">
+          <label>Feedback for latest live run <span id="learning-session-label">No live run yet</span></label>
+          <div class="learning-fields"><label>Rating<select id="learning-rating"><option value="5">5 · Excellent</option><option value="4">4 · Good</option><option value="3" selected>3 · Mixed</option><option value="2">2 · Poor</option><option value="1">1 · Very poor</option></select></label><label>What happened?<textarea id="learning-comment" maxlength="1200" placeholder="What was useful, incorrect, missing, or confusing?"></textarea></label><label>Suggested team guidance<textarea id="learning-improvement" maxlength="1200" placeholder="A specific, reusable instruction that would improve future tasks."></textarea></label></div>
+          <button class="assign-button" id="submit-learning-feedback" type="submit">Save feedback and evaluate suggestion ↗</button>
+        </form>
+        <div id="learning-status" class="model-note" aria-live="polite">Learning history is stored on the server and protected by the model access token.</div>
+        <div class="learning-columns"><div><h3>Pending proposals</h3><div id="learning-proposals"><p class="muted">Load history to review proposals.</p></div></div><div><h3>Approved guidance versions</h3><div id="learning-versions"><p class="muted">No versions loaded.</p></div><button class="outline-button" id="rollback-learning" type="button">Roll back one version</button></div></div>
+      </section>
       <section class="output-dock"><div class="dock-head"><div><p class="eyebrow">Mission output</p><h2 id="output-title">No active mission</h2></div><button id="open-history" class="dock-button">History <span id="history-count">0</span></button></div><div class="output-grid"><div class="report-list" id="report-list"><div class="empty-output"><span>+</span><p>Reports will appear here when the village is assigned work.</p></div></div><aside class="decider-panel" id="decider-panel"><div class="panel-title">DECIDER / FINAL WORD</div><p class="muted">The Decider is accountable for the call.</p></aside></div></section>
     </main>
     <footer><span>AGENT VILLAGE / PLAIN LOCAL</span><span>Transparent orchestration · no browser-side API keys</span></footer>

@@ -2,10 +2,17 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { handleShortsApi } from './studio/shorts-api.mjs';
+import { listModelProviders, generateWithModel, compareModels } from './studio/model-gateway.mjs';
+import { runCouncil } from './studio/council.mjs';
+import { createLearningStore } from './studio/learning-loop.mjs';
+import { createCodeEvolutionStore } from './studio/code-evolution.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
 const port = Number(process.env.PORT || 3000);
+const learning = createLearningStore({ filePath: join(root, '.agent-village', 'learning.json') });
+const evolution = createCodeEvolutionStore({ filePath: join(root, '.agent-village', 'code-proposals.json') });
 
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
@@ -101,9 +108,66 @@ function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (await handleShortsApi(req, res, url)) return;
+  if (url.pathname.startsWith('/api/evolution/')) {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Code evolution is disabled or unauthorized.' });
+      if (req.method === 'GET' && url.pathname === '/api/evolution/proposals') return send(res, 200, { proposals: await evolution.list() });
+      if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 50000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      if (url.pathname === '/api/evolution/proposals') return send(res, 201, await evolution.submit(body));
+      if (url.pathname === '/api/evolution/review') return send(res, 200, await evolution.review(body));
+      return send(res, 404, { error: 'not_found' });
+    } catch (error) { return send(res, 400, { error: error.message || 'code-evolution request failed' }); }
+  }
+  if (url.pathname.startsWith('/api/learning/')) {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Learning workspace is disabled or unauthorized.' });
+      if (req.method === 'GET' && url.pathname === '/api/learning/state') return send(res, 200, await learning.snapshot());
+      if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 12000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      if (url.pathname === '/api/learning/feedback') return send(res, 201, await learning.submitFeedback(body));
+      if (url.pathname === '/api/learning/decision') return send(res, 200, await learning.decideProposal(body));
+      if (url.pathname === '/api/learning/rollback') return send(res, 200, await learning.rollback(body));
+      return send(res, 404, { error: 'not_found' });
+    } catch (error) { return send(res, 400, { error: error.message || 'learning request failed' }); }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/council/run') {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Council is disabled or unauthorized. Configure MODEL_GATE_TOKEN on the server.' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 18000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const guidance = await learning.activeGuidance();
+      const result = await runCouncil({ mission: body.mission, assignments: body.assignments, guidance });
+      await learning.recordSession({ id: result.id, mission: result.mission, reports: result.reports });
+      return send(res, 200, { ...result, learning: { guidanceApplied: Boolean(guidance), feedbackEndpoint: '/api/learning/feedback' } });
+    } catch (error) { return send(res, 400, { error: error.message || 'council run failed' }); }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/models/providers') return send(res, 200, { providers: listModelProviders() });
+  if (req.method === 'POST' && (url.pathname === '/api/models/generate' || url.pathname === '/api/models/compare')) {
+    try {
+      const gateToken = process.env.MODEL_GATE_TOKEN;
+      if (!gateToken || req.headers['x-model-token'] !== gateToken) return send(res, 401, { error: 'Model gateway is disabled or unauthorized. Configure MODEL_GATE_TOKEN on the server.' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const result = url.pathname.endsWith('/compare')
+        ? await compareModels({ prompt: body.prompt, providers: body.providers, system: body.system })
+        : await generateWithModel({ provider: body.provider, prompt: body.prompt, system: body.system });
+      return send(res, 200, result);
+    } catch (error) { return send(res, 400, { error: error.message || 'model request failed' }); }
+  }
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length });
   if (req.method === 'GET' && url.pathname === '/api/capabilities') return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities });
-  if (req.method === 'GET' && url.pathname === '/api/agent-contract') return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } });
+  if (req.method === 'GET' && url.pathname === '/api/agent-contract') return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run', code_change_proposals: 'POST /api/evolution/proposals', code_change_review: 'POST /api/evolution/review', code_change_history: 'GET /api/evolution/proposals' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or unified diffs', 'submit patches only under studio/, public/, test/, or docs/', 'never request or return browser-side secrets', 'never execute or apply a submitted patch through this API', 'human approval authorizes manual review and application only, never merge or deployment'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } });
   if (req.method === 'GET' && url.pathname === '/manus-routes.json') return staticFile('/manus-routes.json', res);
   if (req.method === 'POST' && url.pathname === '/api/run') {
     try { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); } return send(res, 200, await runTask(JSON.parse(raw || '{}'))); }

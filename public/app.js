@@ -47,3 +47,114 @@ async function runMission(event) { event.preventDefault(); const mission = $('#m
 $('#open-mission').addEventListener('click', () => $('#mission-dialog').showModal()); $('#mission-form').addEventListener('submit', runMission); $('#open-history').addEventListener('click', () => { const items = getHistory(); if (items.length) { $('#mission-card-title').textContent = items[0].mission; $('#mission-card-copy').textContent = items[0].decision; } });
 $('#kpi-missions').textContent = getHistory().length; $('#history-count').textContent = getHistory().length;
 $('#approve-plan').addEventListener('click', () => { setWorkbenchStatus('APPROVED', 'HIGH'); addActivity('Plan approved', 'The next connector may execute only within the reviewed scope.', 'active'); }); $('#pause-run').addEventListener('click', () => { setWorkbenchStatus('PAUSED', '—'); addActivity('Run paused', 'No external action will continue until resumed.', 'error'); }); $('#copy-contract').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#copy-contract').dataset.contract || $('#handoff-code').textContent); $('#copy-contract').textContent = 'Copied'; setTimeout(() => { $('#copy-contract').textContent = 'Copy contract'; }, 1500); } catch { $('#copy-contract').textContent = 'Select and copy'; } }); loadCapabilities(); loadAgentContract();
+
+
+// Live multi-model council. Each provider is selected explicitly; token remains in memory only.
+let lastCouncilSessionId = null;
+const councilForm = document.querySelector('#council-form');
+if (councilForm) councilForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = document.querySelector('#run-live-council');
+  const output = document.querySelector('#council-results');
+  const mission = document.querySelector('#council-mission').value.trim();
+  const token = document.querySelector('#council-token').value;
+  const assignments = [...councilForm.querySelectorAll('[data-role]')].map((select) => ({ role: select.dataset.role, provider: select.value }));
+  button.disabled = true; button.textContent = 'Running five agents…'; output.textContent = 'Calling selected models. This may take a little while…';
+  try {
+    const response = await fetch('/api/council/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-model-token': token }, body: JSON.stringify({ mission, assignments }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Council request failed');
+    lastCouncilSessionId = result.id;
+    document.querySelector('#learning-session-label').textContent = 'Session ' + result.id;
+    output.textContent = '';
+    result.reports.forEach((report) => {
+      const card = document.createElement('article'); card.className = 'council-report';
+      const heading = document.createElement('h3'); heading.textContent = report.role.name + ' · ' + report.role.specialty;
+      const meta = document.createElement('small'); meta.textContent = report.provider + ' / ' + report.model;
+      const body = document.createElement('pre'); body.textContent = report.text;
+      card.append(heading, meta, body); output.appendChild(card);
+    });
+    const notice = document.createElement('p'); notice.className = 'model-note'; notice.textContent = result.notice; output.appendChild(notice);
+  } catch (error) { output.textContent = error.message; }
+  finally { button.disabled = false; button.textContent = 'Run live council ↗'; }
+});
+
+
+// Supervised learning: feedback is stored, proposals are evaluated, and only approved guidance is used.
+const learningToken = () => document.querySelector('#council-token')?.value || '';
+async function learningRequest(path, method = 'GET', body = undefined) {
+  const headers = { 'x-model-token': learningToken() };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Learning request failed');
+  return data;
+}
+function addLearningText(parent, tag, value, className = '') {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = value;
+  parent.appendChild(node);
+  return node;
+}
+async function refreshLearning() {
+  const status = document.querySelector('#learning-status');
+  status.textContent = 'Loading supervised learning history…';
+  try {
+    const state = await learningRequest('/api/learning/state');
+    const proposals = document.querySelector('#learning-proposals');
+    const versions = document.querySelector('#learning-versions');
+    proposals.textContent = '';
+    versions.textContent = '';
+    const pending = state.proposals.filter((item) => item.status === 'pending');
+    if (!pending.length) addLearningText(proposals, 'p', 'No pending proposals.', 'muted');
+    pending.forEach((item) => {
+      const card = document.createElement('article'); card.className = 'learning-item';
+      addLearningText(card, 'b', item.text);
+      addLearningText(card, 'small', 'Quality gate: ' + Math.round(item.evaluation.score * 100) + '% · ' + item.evaluation.note);
+      const actions = document.createElement('div'); actions.className = 'learning-actions';
+      for (const decision of ['approve', 'reject']) {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = decision === 'approve' ? 'Approve guidance' : 'Reject'; button.addEventListener('click', async () => {
+          button.disabled = true;
+          try { await learningRequest('/api/learning/decision', 'POST', { proposalId: item.id, decision, reviewer: 'dashboard human reviewer' }); await refreshLearning(); }
+          catch (error) { status.textContent = error.message; button.disabled = false; }
+        });
+        actions.appendChild(button);
+      }
+      card.appendChild(actions); proposals.appendChild(card);
+    });
+    if (!state.versions.length) addLearningText(versions, 'p', 'No approved guidance versions yet.', 'muted');
+    state.versions.forEach((item) => {
+      const card = document.createElement('article'); card.className = 'learning-item';
+      addLearningText(card, 'b', 'Version ' + item.number + (item.id === state.activeVersion?.id ? ' · ACTIVE' : ''));
+      addLearningText(card, 'small', item.guidance);
+      versions.appendChild(card);
+    });
+    status.textContent = 'Loaded ' + state.sessions.length + ' recent live sessions, ' + state.feedback.length + ' feedback entries, and ' + state.proposals.length + ' proposals. Active guidance: ' + (state.activeVersion ? 'version ' + state.activeVersion.number : 'none yet') + '.';
+  } catch (error) { status.textContent = error.message; }
+}
+const learningForm = document.querySelector('#learning-feedback-form');
+if (learningForm) learningForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.querySelector('#learning-status');
+  if (!lastCouncilSessionId) { status.textContent = 'Run the live model council first; feedback must reference a real session.'; return; }
+  const button = document.querySelector('#submit-learning-feedback');
+  button.disabled = true;
+  try {
+    const result = await learningRequest('/api/learning/feedback', 'POST', {
+      sessionId: lastCouncilSessionId,
+      rating: Number(document.querySelector('#learning-rating').value),
+      comment: document.querySelector('#learning-comment').value,
+      improvement: document.querySelector('#learning-improvement').value
+    });
+    status.textContent = result.proposal ? 'Feedback saved. Proposal quality score: ' + Math.round(result.proposal.evaluation.score * 100) + '%. ' + result.proposal.evaluation.note : 'Feedback saved. No guidance proposal was submitted.';
+    await refreshLearning();
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
+});
+document.querySelector('#refresh-learning')?.addEventListener('click', refreshLearning);
+document.querySelector('#rollback-learning')?.addEventListener('click', async () => {
+  const status = document.querySelector('#learning-status');
+  try { await learningRequest('/api/learning/rollback', 'POST', { reviewer: 'dashboard human reviewer' }); status.textContent = 'Rolled back to the previous approved guidance version.'; await refreshLearning(); }
+  catch (error) { status.textContent = error.message; }
+});

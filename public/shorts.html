@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Create, review, and approve educational cartoon Shorts projects.">
+  <title>Shorts Studio · Agent Village</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/shorts.css">
+</head>
+<body>
+  <div class="app-shell shorts-shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-icon"><i></i><i></i><b></b></span><span><strong>AGENT VILLAGE</strong><small>shorts studio / supervised production</small></span></a>
+      <div class="topbar-actions"><span id="cache-pill" class="status-pill" title="Pexels cache status">📦 Cache: loading</span><a class="outline-button" href="/">Back to village</a></div>
+    </header>
+    <main class="shorts-main">
+      <section class="shorts-hero">
+        <p class="eyebrow">Production workspace / educational cartoons</p>
+        <h1>Shorts Studio</h1>
+        <p>Build a 30–40 second short, attach the sources you checked, plan each scene, and submit it for human approval.</p>
+        <div class="shorts-status" id="studio-status" role="status">Local project storage · Renderer adapter not connected</div>
+      </section>
+      <div class="shorts-layout">
+        <aside class="shorts-sidebar">
+          <div class="shorts-sidebar-head"><h2>Projects</h2><button class="assign-button" id="new-project">New project +</button></div>
+          <div id="project-list" class="project-list"><p class="muted">Loading projects…</p></div>
+        </aside>
+        <section class="shorts-editor">
+          <form id="project-form">
+            <input type="hidden" id="project-id">
+            <div class="editor-heading"><div><p class="eyebrow">Project editor</p><h2 id="editor-title">New educational short</h2></div><span id="project-status" class="status-pill">DRAFT</span></div>
+            <div class="shorts-fields">
+              <label>Video title<input id="title" maxlength="100" required placeholder="Why is the sky blue?"></label>
+              <label>Topic<input id="topic" maxlength="240" required placeholder="Explain Rayleigh scattering simply"></label>
+              <label>Audience<input id="audience" maxlength="160" placeholder="Curious learners aged 10–14"></label>
+              <label>Target duration<select id="target-seconds"><option>30</option><option>35</option><option>40</option></select></label>
+            </div>
+            <label class="wide-label">Narration script<textarea id="script" maxlength="5000" rows="6" placeholder="Write the complete narration. Keep the language clear and age-appropriate."></textarea></label>
+            <div class="section-head"><div><h3>Storyboard scenes</h3><p>Each scene needs narration, a visual description, and duration. Total should match the target.</p></div><button type="button" class="outline-button" id="add-scene">Add scene</button></div>
+            <div id="scene-list" class="repeat-list"></div>
+            <div class="section-head"><div><h3>Research sources</h3><p>Add the pages you actually checked. Mark each source verified only after reviewing it.</p></div><button type="button" class="outline-button" id="add-source">Add source</button></div>
+            <div id="source-list" class="repeat-list"></div>
+            <label class="review-token-field">Reviewer token<input id="review-token" type="password" autocomplete="off" placeholder="Set SHORTS_REVIEW_TOKEN on the server"></label>
+            <div class="editor-actions">
+              <button type="submit" class="assign-button" id="save-project">Save draft</button>
+              <button type="button" class="outline-button" id="submit-review">Submit for review</button>
+              <button type="button" class="outline-button" id="approve-project">Approve</button>
+              <button type="button" class="outline-button" id="reject-project">Request changes</button>
+              <button type="button" class="outline-button" id="prepare-render">Prepare Toon2D project</button>
+              <button type="button" class="assign-button" id="composite-video">Create final video with Pexels</button>
+            </div>
+            <p id="editor-message" class="editor-message" role="status">Save a draft before submitting it for review.</p>
+          </form>
+        </section>
+      </div>
+    </main>
+    <footer><span>SHORTS STUDIO / LOCAL PROJECTS</span><span>Human approval required · no automatic publishing</span></footer>
+  </div>
+  <script src="/shorts.js"></script>
+</body>
+</html>
