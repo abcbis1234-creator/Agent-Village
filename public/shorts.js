@@ -83,6 +83,7 @@ function showProject(project) {
   $('#submit-review').disabled = approved || reviewing;
   $('#approve-project').disabled = !reviewing;
   $('#reject-project').disabled = !reviewing;
+  $('#prepare-render').disabled = !approved;
   message(project ? `Updated ${new Date(project.updatedAt).toLocaleString()} · ${project.history.length} history events` : 'Save a draft before submitting it for review.');
 }
 async function refreshProjects(selectId = currentProject?.id) {
@@ -136,4 +137,12 @@ $('#add-source').addEventListener('click', () => $('#source-list').appendChild(s
 $('#submit-review').addEventListener('click', () => action('submit'));
 $('#approve-project').addEventListener('click', () => action('approve', 'Approved by the project owner.'));
 $('#reject-project').addEventListener('click', () => action('reject', 'Changes requested by the reviewer.'));
+$('#prepare-render').addEventListener('click', async () => {
+  try {
+    const id = $('#project-id').value;
+    if (!id) throw new Error('Save and approve a project first.');
+    const { preparation } = await api(`/api/shorts/projects/${encodeURIComponent(id)}/prepare-render`, { method: 'POST', body: JSON.stringify({}) });
+    message(`Toon2D project prepared: ${preparation.durationSeconds}s, ${preparation.sceneCount} scenes, ${preparation.wordCount} words. No MP4 has been rendered yet.`);
+  } catch (error) { message(error.message, true); }
+});
 refreshProjects().then((projects) => { if (projects?.length) loadProject(projects[0].id); else showProject(null); }).catch((error) => message(error.message, true));
