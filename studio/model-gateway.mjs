@@ -29,14 +29,21 @@ const PROVIDERS = {
     label: 'Google / Gemini',
     keyEnv: 'GEMINI_API_KEY',
     modelEnv: 'GEMINI_MODEL',
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: '',
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/models'
   }
 };
 
 const MAX_PROMPT_CHARS = 12000;
 const MAX_SYSTEM_CHARS = 4000;
-const REQUEST_TIMEOUT_MS = 60000;
+const REQUEST_TIMEOUT_MS = 45000;
+const MAX_TIMEOUT_MS = 60000;
+const DEFAULT_SYSTEM = 'You are a careful specialist agent. State uncertainty, distinguish facts from assumptions, and do not invent evidence.';
+
+function validateTimeout(value) {
+  if (!Number.isInteger(value) || value < 1000 || value > MAX_TIMEOUT_MS) throw new Error('timeoutMs must be an integer between 1000 and 60000');
+  return value;
+}
 
 function providerConfig(id, env = process.env) {
   const definition = PROVIDERS[id];
@@ -91,7 +98,7 @@ async function requestProvider(config, prompt, system, fetchImpl, signal) {
   let headers = { 'Content-Type': 'application/json' };
   let body;
   if (config.id === 'ollama') {
-    body = { model: config.model, stream: false, messages: [{ role: 'system', content: system || 'You are a careful specialist agent. State uncertainty and do not invent evidence.' }, { role: 'user', content: prompt }] };
+    body = { model: config.model, stream: false, messages: [{ role: 'system', content: system || DEFAULT_SYSTEM }, { role: 'user', content: prompt }] };
   } else if (config.id === 'openai') {
     headers.Authorization = 'Bearer ' + config.key;
     body = { model: config.model, input: [{ role: 'system', content: system || 'You are a careful specialist agent. State uncertainty and do not invent evidence.' }, { role: 'user', content: prompt }], max_output_tokens: 1800 };
@@ -121,9 +128,16 @@ export async function generateWithModel({ provider, prompt, system = '', env = p
   const safePrompt = validateText(prompt, 'prompt', MAX_PROMPT_CHARS);
   const safeSystem = validateText(system, 'system', MAX_SYSTEM_CHARS, false);
   const config = providerConfig(provider, env);
+  const safeTimeout = validateTimeout(timeoutMs);
+  if (!config.model || typeof config.model !== 'string' || config.model.length > 120) throw new Error(config.label + ' model is not configured. Set ' + (PROVIDERS[provider].modelEnv || 'OLLAMA_MODEL') + ' to a valid model name.');
+  if (config.id === 'ollama') {
+    let localUrl;
+    try { localUrl = new URL(config.endpoint); } catch { throw new Error('OLLAMA_HOST must be a valid local URL'); }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(localUrl.hostname) || localUrl.protocol !== 'http:') throw new Error('Ollama endpoint must use localhost over HTTP; remote endpoints are disabled for safety');
+  }
   if (!config.configured) throw new Error(config.label + ' is not configured. Add its API key to the server environment.');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Model request timed out')), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error('Model request timed out')), safeTimeout);
   try {
     const output = await requestProvider(config, safePrompt, safeSystem, fetchImpl, controller.signal);
     return { provider: config.id, providerLabel: config.label, model: config.model, text: output, generatedAt: new Date().toISOString() };
@@ -135,12 +149,12 @@ export async function generateWithModel({ provider, prompt, system = '', env = p
   }
 }
 
-export async function compareModels({ prompt, providers = ['openai', 'anthropic', 'gemini'], system = '', env = process.env, fetchImpl = fetch } = {}) {
+export async function compareModels({ prompt, providers = ['ollama'], system = '', env = process.env, fetchImpl = fetch, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   if (!Array.isArray(providers) || providers.length < 1 || providers.length > 4 || new Set(providers).size !== providers.length) {
-    throw new Error('Choose between one and three distinct providers');
+    throw new Error('Choose between one and four distinct providers');
   }
   const results = await Promise.all(providers.map(async (provider) => {
-    try { return { ok: true, ...(await generateWithModel({ provider, prompt, system, env, fetchImpl })) }; }
+    try { return { ok: true, ...(await generateWithModel({ provider, prompt, system, env, fetchImpl, timeoutMs })) }; }
     catch (error) { return { ok: false, provider, error: error.message }; }
   }));
   return { results, successful: results.filter((item) => item.ok).length, attempted: results.length };
