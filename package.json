@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js",
+    "check": "node --check server.mjs && node --check public/app.js && node --check test/server.test.mjs && node --check eval/run.mjs",
     "test": "node --test",
     "eval": "node eval/run.mjs"
   },

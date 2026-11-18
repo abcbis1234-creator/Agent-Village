@@ -244,6 +244,55 @@ function drawOutput(result) {
   addActivity('Decider ready for review', 'Approve, pause, or hand off the contract.', 'active');
 }
 
+async function runStream(payload) {
+  const response = await fetch('/api/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, stream: true }),
+  });
+  if (!response.body) {
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Mission failed');
+    return data;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      let event = 'message';
+      let data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7);
+        else if (line.startsWith('data: ')) data = line.slice(6);
+      }
+      if (!data) continue;
+      let parsed;
+      try { parsed = JSON.parse(data); } catch { continue; }
+      if (event === 'status') {
+        if (parsed.phase === 'model') addActivity('Model', parsed.message, 'done');
+        else if (parsed.phase === 'tool') addActivity('Tool call', parsed.message, 'active');
+        else addActivity('Status', parsed.message, 'done');
+      } else if (event === 'approval') {
+        throw { approval: parsed };
+      } else if (event === 'error') {
+        throw new Error(parsed.message || 'Mission failed');
+      } else if (event === 'result') {
+        finalResult = parsed;
+      }
+    }
+  }
+  if (!finalResult) throw new Error('No result from stream');
+  return finalResult;
+}
+
 async function runMission(event) {
   event.preventDefault();
   const missionInput = $('#mission-input');
@@ -278,26 +327,23 @@ async function runMission(event) {
     let payload = { mission, rounds, capability };
     let result = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const response = await fetch('/api/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      if (response.status === 202 && data.id && attempt === 0) {
-        const approve = window.confirm(`Approve tool "${data.tool}"?\n${JSON.stringify(data.args).slice(0, 300)}`);
-        if (!approve) throw new Error('Tool approval declined');
-        await fetch('/api/tools/approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: data.id }),
-        });
-        payload = { mission, rounds, capability, approvedTools: [data.id] };
-        continue;
+      try {
+        result = await runStream(payload);
+        break;
+      } catch (error) {
+        if (error && error.approval && attempt === 0) {
+          const approve = window.confirm(`Approve tool "${error.approval.tool}"?\n${JSON.stringify(error.approval.args).slice(0, 300)}`);
+          if (!approve) throw new Error('Tool approval declined');
+          await fetch('/api/tools/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: error.approval.id }),
+          });
+          payload = { mission, rounds, capability, approvedTools: [error.approval.id] };
+          continue;
+        }
+        throw error;
       }
-      if (!response.ok) throw new Error(data.error || 'Mission failed');
-      result = data;
-      break;
     }
     if (!result) throw new Error('Mission did not complete');
     drawOutput(result);

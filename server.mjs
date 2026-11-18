@@ -9,20 +9,63 @@ const mediaDir = join(root, 'media');
 const dataDir = join(root, 'data');
 const port = Number(process.env.PORT || 3000);
 
-// Persistent memory: corrections and knowledge notes. This is NOT model training.
+// Persistent memory: SQLite when available, JSON fallback otherwise.
+let db = null;
 let feedbackStore = [];
 let knowledgeStore = [];
 function normalizeMission(value) { return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
-async function loadStores() {
+async function initStore() {
   try { await mkdir(dataDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    const sqlite = await import('node:sqlite');
+    db = new sqlite.DatabaseSync(join(dataDir, 'village.db'));
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS feedback (id TEXT PRIMARY KEY, mission TEXT, expected_capability TEXT, note TEXT, created_at TEXT);
+      CREATE TABLE IF NOT EXISTS knowledge (id TEXT PRIMARY KEY, title TEXT, content TEXT, created_at TEXT);
+      CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, kind TEXT, detail TEXT);
+      CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, mission TEXT, capability TEXT, rounds INTEGER, source TEXT, created_at TEXT, result_json TEXT);
+      CREATE TABLE IF NOT EXISTS embeddings (id TEXT PRIMARY KEY, model TEXT, vector TEXT);
+    `);
+    feedbackStore = db.prepare('SELECT * FROM feedback').all().map((r) => ({ id: r.id, mission: r.mission, expectedCapability: r.expected_capability, note: r.note, at: r.created_at }));
+    knowledgeStore = db.prepare('SELECT * FROM knowledge').all().map((r) => ({ id: r.id, title: r.title, content: r.content, at: r.created_at }));
+    return;
+  } catch { db = null; }
   try { feedbackStore = JSON.parse(await readFile(join(dataDir, 'feedback.json'), 'utf8')); } catch { feedbackStore = []; }
   try { knowledgeStore = JSON.parse(await readFile(join(dataDir, 'knowledge.json'), 'utf8')); } catch { knowledgeStore = []; }
   if (!Array.isArray(feedbackStore)) feedbackStore = [];
   if (!Array.isArray(knowledgeStore)) knowledgeStore = [];
 }
-async function saveFeedback() { try { await mkdir(dataDir, { recursive: true }); await writeFile(join(dataDir, 'feedback.json'), JSON.stringify(feedbackStore, null, 2)); } catch { /* ignore */ } }
-async function saveKnowledge() { try { await mkdir(dataDir, { recursive: true }); await writeFile(join(dataDir, 'knowledge.json'), JSON.stringify(knowledgeStore, null, 2)); } catch { /* ignore */ } }
-await loadStores();
+function persistFeedback() {
+  if (db) {
+    try {
+      db.exec('DELETE FROM feedback');
+      const stmt = db.prepare('INSERT INTO feedback (id, mission, expected_capability, note, created_at) VALUES (?,?,?,?,?)');
+      for (const e of feedbackStore) stmt.run(e.id, e.mission, e.expectedCapability, e.note || '', e.at || new Date().toISOString());
+      return;
+    } catch { /* fall through */ }
+  }
+  writeFile(join(dataDir, 'feedback.json'), JSON.stringify(feedbackStore, null, 2)).catch(() => {});
+}
+function persistKnowledge() {
+  if (db) {
+    try {
+      db.exec('DELETE FROM knowledge');
+      const stmt = db.prepare('INSERT INTO knowledge (id, title, content, created_at) VALUES (?,?,?,?)');
+      for (const e of knowledgeStore) stmt.run(e.id, e.title, e.content, e.at || new Date().toISOString());
+      return;
+    } catch { /* fall through */ }
+  }
+  writeFile(join(dataDir, 'knowledge.json'), JSON.stringify(knowledgeStore, null, 2)).catch(() => {});
+}
+async function saveFeedback() { persistFeedback(); }
+async function saveKnowledge() { persistKnowledge(); }
+function recordMission(result) {
+  if (!db || !result || !result.id) return;
+  try {
+    db.prepare('INSERT OR REPLACE INTO missions (id, mission, capability, rounds, source, created_at, result_json) VALUES (?,?,?,?,?,?,?)')
+      .run(result.id, result.mission, (result.capability && result.capability.key) || null, result.rounds || 0, result.source || '', new Date().toISOString(), JSON.stringify(result).slice(0, 100000));
+  } catch { /* ignore */ }
+}
 
 const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
@@ -64,7 +107,19 @@ const providerConfig = {
 };
 const mediaApprovalState = new Map(); // id -> { approved, mission, kind, prompt, at }
 const auditLog = [];
-function audit(kind, detail) { auditLog.push({ at: new Date().toISOString(), kind, detail }); if (auditLog.length > 200) auditLog.shift(); }
+function audit(kind, detail) {
+  const at = new Date().toISOString();
+  auditLog.push({ at, kind, detail });
+  if (auditLog.length > 200) auditLog.shift();
+  if (db) { try { db.prepare('INSERT INTO audit (at, kind, detail) VALUES (?,?,?)').run(at, kind, detail); } catch { /* ignore */ } }
+}
+await initStore();
+if (db) {
+  try {
+    auditLog.length = 0;
+    auditLog.push(...db.prepare('SELECT at, kind, detail FROM audit ORDER BY id DESC LIMIT 100').all().reverse());
+  } catch { /* ignore */ }
+}
 
 async function ensureMediaDir() { try { await mkdir(mediaDir, { recursive: true }); } catch { /* ignore */ } }
 
@@ -128,6 +183,8 @@ const llmConfig = {
   baseUrl: process.env.LLM_BASE_URL || llmPreset.baseUrl || '',
   apiKey: process.env.LLM_API_KEY || '',
   model: process.env.LLM_MODEL || llmPreset.model || 'llama3.1',
+  modelMap: (() => { try { return JSON.parse(process.env.LLM_MODEL_MAP || '{}'); } catch { return {}; } })(),
+  embedModel: process.env.LLM_EMBED_MODEL || 'nomic-embed-text',
   temperature: Number(process.env.LLM_TEMPERATURE || 0.4),
   timeoutMs: Number(process.env.LLM_TIMEOUT_MS || 30000),
   configured: Boolean(process.env.LLM_BASE_URL || llmPreset.baseUrl),
@@ -275,6 +332,56 @@ function matchKnowledge(mission) {
   }).slice(0, 3);
 }
 
+const embeddingCache = new Map();
+async function embedText(text) {
+  const key = String(text).slice(0, 500);
+  if (embeddingCache.has(key)) return embeddingCache.get(key);
+  if (!llmConfig.configured || !llmConfig.baseUrl) throw new Error('embeddings unavailable');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${llmConfig.baseUrl.replace(/\/$/, '')}/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(llmConfig.apiKey ? { Authorization: `Bearer ${llmConfig.apiKey}` } : {}) },
+      body: JSON.stringify({ model: llmConfig.embedModel, input: text }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`embeddings HTTP ${response.status}`);
+    const data = await response.json();
+    const vector = data.data && data.data[0] && data.data[0].embedding;
+    if (!Array.isArray(vector)) throw new Error('no embedding returned');
+    embeddingCache.set(key, vector);
+    return vector;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('embeddings timed out');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function cosine(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  if (!na || !nb) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+async function matchKnowledgeSemantic(mission) {
+  const queryVector = await embedText(mission);
+  const scored = [];
+  for (const k of knowledgeStore) {
+    let vector;
+    try { vector = await embedText(`${k.title} ${k.content}`); } catch { continue; }
+    scored.push({ k, score: cosine(queryVector, vector) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.filter((entry) => entry.score > 0.2).slice(0, 3).map((entry) => entry.k);
+}
+
 function buildFinalAnswer(parsed, { mission, rounds, key, info, roles, matchedKnowledge, toolTrace }) {
   const reportEntries = Array.isArray(parsed.reports) ? parsed.reports : [];
   const reports = [];
@@ -312,7 +419,7 @@ function buildFinalAnswer(parsed, { mission, rounds, key, info, roles, matchedKn
   return { id: `mission-${Date.now()}`, mission, rounds, source: `LLM · ${llmConfig.model}`, capability: info, deliverable: deliverableOut, reports, knowledge: matchedKnowledge.map((k) => k.title), toolTrace, verdict };
 }
 
-async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools = [] }) {
+async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools = [], onStatus }) {
   const knowledgeBlock = matchedKnowledge.length ? matchedKnowledge.map((k) => `- [${k.title}] ${k.content}`).join('\n') : '(none)';
   const toolList = TOOLS.map((t) => `- ${t.name}(${t.parameters}) [${t.consequence}]: ${t.description}`).join('\n');
   const system = [
@@ -339,13 +446,16 @@ async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowle
 
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   const toolTrace = [];
+  const model = llmConfig.modelMap[key] || llmConfig.model;
+  if (onStatus) onStatus('model', `Using ${model} for the ${info.name} route`);
 
   for (let step = 0; step < 5; step += 1) {
-    const raw = await callLLM(messages, { json: true });
+    const raw = await callLLM(messages, { json: true, model });
     let parsed;
     try { parsed = JSON.parse(raw); } catch { throw new Error('LLM returned invalid JSON'); }
 
     if (!parsed || typeof parsed !== 'object' || !parsed.tool) {
+      if (onStatus) onStatus('final', 'Composing the final deliverable');
       return buildFinalAnswer(parsed || {}, { mission, rounds, key, info, roles, matchedKnowledge, toolTrace });
     }
 
@@ -368,6 +478,7 @@ async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowle
     }
 
     let result;
+    if (onStatus) onStatus('tool', toolDef.name);
     try { result = await toolDef.handler(args); } catch (error) { result = { error: error.message }; }
     audit('tool', `${toolDef.name} ${argsKey.slice(0, 80)}`);
     toolTrace.push({ tool: toolDef.name, args, result: JSON.stringify(result).slice(0, 1000) });
@@ -495,17 +606,26 @@ function report(role, key, round) {
   return `${mode} route / round ${round}: ${endings[role]}`;
 }
 
-async function runTask(body) {
+async function runTask(body, onStatus) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('invalid request body');
   const mission = cleanMission(body.mission);
   const rounds = Math.max(1, Math.min(3, Number.isInteger(body.rounds) ? body.rounds : 2));
   const key = routeMission(mission, body.capability);
   const info = capabilities.find((item) => item.key === key) || capabilities[4];
   const roles = [['nova', 'Nova', 'Planning'], ['atlas', 'Atlas', 'Architecture'], ['lyra', 'Lyra', 'Research'], ['forge', 'Forge', 'Build'], ['echo', 'Echo', 'Critique']];
-  const matchedKnowledge = matchKnowledge(mission);
+  let matchedKnowledge = [];
+  if (knowledgeStore.length) {
+    if (llmConfig.configured) {
+      try { matchedKnowledge = await matchKnowledgeSemantic(mission); } catch { matchedKnowledge = matchKnowledge(mission); }
+    } else {
+      matchedKnowledge = matchKnowledge(mission);
+    }
+  }
   if (llmConfig.configured) {
     try {
-      return await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools: Array.isArray(body.approvedTools) ? body.approvedTools : [] });
+      const out = await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools: Array.isArray(body.approvedTools) ? body.approvedTools : [], onStatus });
+      recordMission(out);
+      return out;
     } catch (error) {
       if (error instanceof ApprovalRequired) throw error;
       audit('llm', `fallback to demo: ${error.message}`);
@@ -527,7 +647,10 @@ async function runTask(body) {
   const confidenceLevels = { generalist: 'high', reasoning: 'high', multimodal: 'medium', agentic: 'medium', long_context: 'medium' };
   const del = deliverable(mission, key, info);
   if (matchedKnowledge.length) del.sections = [...del.sections, { name: 'Knowledge', content: matchedKnowledge.map((k) => `${k.title}: ${k.content}`).join(' | ') }];
-  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
+  if (onStatus) onStatus('final', `Routed to ${info.name}; composing ${reports.length} demo reports`);
+  const out = { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
+  recordMission(out);
+  return out;
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
@@ -543,6 +666,13 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: [...Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })), { kind: 'llm', provider: llmConfig.model, preset: llmConfig.preset || null, configured: llmConfig.configured }] }); }
   if (req.method === 'GET' && url.pathname === '/api/llm/presets') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', active: llmConfig.preset || null, configured: llmConfig.configured, presets: Object.entries(LLM_PRESETS).map(([name, p]) => ({ name, label: p.label, baseUrl: p.baseUrl, model: p.model })) }); }
   if (req.method === 'GET' && url.pathname === '/api/audit') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', audit: auditLog.slice(-100) }); }
+  if (req.method === 'GET' && url.pathname === '/api/missions') {
+    const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit')) || 20));
+    let rows = [];
+    if (db) { try { rows = db.prepare('SELECT id, mission, capability, rounds, source, created_at FROM missions ORDER BY created_at DESC LIMIT ?').all(limit); } catch { rows = []; } }
+    logRequest(req, 200);
+    return send(res, 200, { source: 'MANAGED LOCAL DEMO', storage: db ? 'sqlite' : 'json', missions: rows });
+  }
   if (req.method === 'GET' && url.pathname === '/api/tools') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', tools: TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters, consequence: t.consequence })) }); }
   if (req.method === 'GET' && url.pathname === '/api/feedback') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.slice(-50) }); }
   if (req.method === 'POST' && url.pathname === '/api/feedback') {
@@ -586,7 +716,27 @@ async function handleRequest(req, res) {
     try {
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
-      return send(res, 200, await runTask(JSON.parse(raw || '{}')));
+      const body = JSON.parse(raw || '{}');
+      if (body.stream) {
+        res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
+        const emit = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ } };
+        try {
+          const result = await runTask(body, (phase, message) => emit('status', { phase, message }));
+          emit('result', result);
+        } catch (error) {
+          if (error instanceof ApprovalRequired) {
+            const id = `tool-${Date.now()}`;
+            toolApprovalState.set(id, { approved: false, tool: error.approval.tool, args: error.approval.args, at: new Date().toISOString() });
+            emit('approval', { id, tool: error.approval.tool, args: error.approval.args });
+          } else {
+            emit('error', { message: error.message || 'request failed' });
+          }
+        }
+        res.end();
+        logRequest(req, 200);
+        return;
+      }
+      return send(res, 200, await runTask(body));
     } catch (error) {
       if (error instanceof ApprovalRequired) {
         const id = `tool-${Date.now()}`;
@@ -672,4 +822,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge, callLLM, runTaskWithLLM, matchKnowledge, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, initStore, saveFeedback, saveKnowledge, recordMission, db, callLLM, runTaskWithLLM, matchKnowledge, matchKnowledgeSemantic, embedText, cosine, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression };

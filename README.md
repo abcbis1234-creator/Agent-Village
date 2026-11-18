@@ -183,12 +183,33 @@ export LLM_MODEL="gpt-4o-mini"
 
 Optional: `LLM_TEMPERATURE` (default `0.4`), `LLM_TIMEOUT_MS` (default `30000`).
 
+- `LLM_MODEL_MAP` — JSON map of capability → model, e.g. `{"code":"qwen2.5-coder:7b","reasoning":"deepseek-r1:7b"}`. Routes each capability to a different model.
+- `LLM_EMBED_MODEL` — embedding model for semantic memory (default `nomic-embed-text`). Used for `/embeddings` on the same base URL.
+
 When configured:
 - `POST /api/run` asks the LLM for JSON (deliverable, reports, verdict), validated and clamped server-side.
 - Matched knowledge notes are injected into the prompt as retrieval context.
 - If the LLM is unreachable or returns invalid JSON, the demo router is used as a fallback and the audit log records it.
 
 `GET /api/providers` reports the `llm` provider and model (never the key). No keys reach the browser, and the model never modifies code.
+
+### Streaming (SSE)
+
+Pass `"stream": true` to `POST /api/run` to receive server-sent events:
+
+```
+event: status  data: {"phase":"model","message":"Using llama3.1 for the Planning route"}
+event: status  data: {"phase":"tool","message":"calculator"}
+event: result  data: { ...final result... }
+```
+
+Errors arrive as `event: error`; a consequential tool call arrives as `event: approval` (approve via `POST /api/tools/approve`, then re-run with `approvedTools: [id]`). The Workbench uses this automatically and shows live phase updates.
+
+### Persistence
+
+Data is stored in SQLite (`data/village.db`) via Node's built-in `node:sqlite` when available, falling back to JSON files otherwise. Tables: `feedback`, `knowledge`, `audit`, `missions`, `embeddings`.
+
+`GET /api/missions?limit=20` returns recent runs with their capability and source.
 
 ## Tool use (allow-listed, approval-gated)
 
@@ -216,7 +237,7 @@ Agent Village has **no trained model**. Routing is deterministic keyword scoring
 - `POST /api/knowledge` — store a note: `{ title, content }`. Matching notes are injected into deliverables as a `Knowledge` section and listed in `knowledge` on the run result.
 - `GET /api/knowledge` — list stored notes.
 
-Notes and corrections persist to `data/feedback.json` and `data/knowledge.json` (git-ignored) and survive restarts. The **Teach the village** card in the Workbench exposes both.
+Notes and corrections persist to SQLite (`data/village.db`) and survive restarts. When an LLM is configured, retrieval upgrades from keyword matching to **semantic search**: knowledge notes are embedded via `/embeddings` and ranked by cosine similarity (falls back to keywords if embeddings are unavailable). The **Teach the village** card in the Workbench exposes both.
 
 ### Not supported, by design
 
@@ -252,15 +273,13 @@ No single feature creates a breakthrough. These are the highest-leverage next st
 
 | Upgrade | Why it matters | Effort | Risk |
 |---|---|---|---|
-| **Streaming responses (SSE)** | Live token output; feels real; enables cancellation | M | Low |
-| **Embedding-based memory** | Replace keyword retrieval with semantic search (OpenAI-compatible `/embeddings` or local) | M | Low |
-| **SQLite persistence** | Missions, feedback, knowledge, and audit in one durable, concurrency-safe store | M | Low |
-| **Multi-role model routing** | Planner on a strong model, critic on a cheap/fast one for cost/latency control | M | Medium |
 | **Auth + multi-user** | Token auth for write endpoints; per-user history | M | Medium |
 | **Observability** | Structured JSON logs, request IDs, `/metrics` | S | Low |
 | **Adversarial eval suite** | Golden set of prompt-injection cases alongside routing evals | S | Low |
+| **Cancel / abort mid-run** | Client disconnect cancels the model call | S | Low |
+| **Cost & token accounting** | Track tokens/usage per mission | S | Low |
 
-Already in place: tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), provider presets, approval-gated media, and feedback/knowledge memory.
+Already in place: streaming (SSE), semantic embeddings, SQLite persistence, per-capability model routing, tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), missions log (`GET /api/missions`), provider presets, approval-gated media, and feedback/knowledge memory.
 
 ## Security
 

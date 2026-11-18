@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server, generateImageStableDiffusion, providerConfig, llmConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge, toolApprovalState, evaluateExpression } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig, llmConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge, toolApprovalState, evaluateExpression, matchKnowledgeSemantic } from '../server.mjs';
 
 let port;
 
@@ -429,4 +429,118 @@ test('Consequential tool requires approval before execution', async () => {
     toolApprovalState.clear();
     await new Promise((resolve) => mock.close(resolve));
   }
+});
+
+function streamRequest(path, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, contentType: res.headers['content-type'], data }));
+    });
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function parseSSE(text) {
+  const events = [];
+  for (const block of text.split('\n\n')) {
+    if (!block.trim()) continue;
+    let event = 'message';
+    let payload = '';
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event: ')) event = line.slice(7);
+      else if (line.startsWith('data: ')) payload = line.slice(6);
+    }
+    if (payload) { try { events.push({ event, data: JSON.parse(payload) }); } catch { /* ignore */ } }
+  }
+  return events;
+}
+
+test('Streaming run emits status and result events', async () => {
+  const res = await streamRequest('/api/run', { mission: 'plan a launch', capability: 'planning', rounds: 1, stream: true });
+  assert.strictEqual(res.status, 200);
+  assert.match(res.contentType, /text\/event-stream/);
+  const events = parseSSE(res.data);
+  assert.ok(events.some((e) => e.event === 'status'));
+  const result = events.find((e) => e.event === 'result');
+  assert.ok(result, 'should include a result event');
+  assert.strictEqual(result.data.capability.key, 'planning');
+});
+
+test('Capability-specific model routing selects the mapped model', async () => {
+  const captured = [];
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      captured.push(JSON.parse(body));
+      const content = JSON.stringify({ decision: 'ok', rationale: 'r', dissent: '', next_actions: [], confidence: 'low', deliverable: { title: 'D', sections: [] }, reports: [] });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, model: llmConfig.model, modelMap: llmConfig.modelMap };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mock.address().port}`;
+  llmConfig.model = 'default-model';
+  llmConfig.modelMap = { planning: 'strong-model' };
+  try {
+    const res = await request('/api/run', 'POST', { mission: 'plan a launch', capability: 'planning', rounds: 1 });
+    assert.strictEqual(res.status, 200);
+    assert.ok(captured.length > 0);
+    assert.strictEqual(captured[0].model, 'strong-model');
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.model = original.model;
+    llmConfig.modelMap = original.modelMap;
+    await new Promise((resolve) => mock.close(resolve));
+  }
+});
+
+test('Semantic memory matches by embedding similarity', async () => {
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const parsed = JSON.parse(body);
+      const vector = /village/i.test(String(parsed.input || '')) ? [1, 0, 0] : [0, 1, 0];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ embedding: vector }] }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, embedModel: llmConfig.embedModel };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mock.address().port}`;
+  llmConfig.embedModel = 'mock-embed';
+  const backup = knowledgeStore.slice();
+  knowledgeStore.length = 0;
+  knowledgeStore.push({ id: 'kn-test', title: 'Village lore', content: 'the village runs on gold light', at: new Date().toISOString() });
+  try {
+    const matches = await matchKnowledgeSemantic('describe the village');
+    assert.ok(matches.some((m) => m.id === 'kn-test'));
+    const none = await matchKnowledgeSemantic('unrelated topic about taxes');
+    assert.strictEqual(none.length, 0);
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.embedModel = original.embedModel;
+    knowledgeStore.length = 0;
+    knowledgeStore.push(...backup);
+    await new Promise((resolve) => mock.close(resolve));
+  }
+});
+
+test('Missions are recorded and retrievable', async () => {
+  const run = await request('/api/run', 'POST', { mission: 'record this mission please', capability: 'writing', rounds: 1 });
+  assert.strictEqual(run.status, 200);
+  const list = await request('/api/missions?limit=5');
+  assert.strictEqual(list.status, 200);
+  assert.ok(Array.isArray(list.body.missions));
+  assert.ok(list.body.missions.some((m) => m.mission === 'record this mission please'));
 });
