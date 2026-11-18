@@ -81,7 +81,8 @@ export async function handleShortsApi(req, res, url) {
         }
         const footageOverrides = [];
         for (const scene of sourceProject.scenes) {
-          const query = scene.brollQuery || scene.visual || sourceProject.topic;
+          const visualQuery = typeof scene.visual === 'string' ? scene.visual.split(/[.!?]/u)[0].split(/\\s+/u).slice(0, 8).join(' ') : '';
+          const query = scene.brollQuery || visualQuery || sourceProject.topic;
           footageOverrides.push(await fetchBackgroundVideo(query));
         }
         const composition = await compositePexelsFootage(sourceProject, { footageOverrides });
