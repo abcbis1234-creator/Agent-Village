@@ -111,15 +111,26 @@ async function generateMedia(kind, prompt, options = {}) {
   return { provider: cfg.provider, kind, prompt, status: 'accepted', note: 'Video adapter not implemented. Add an adapter behind this boundary to produce real video.' };
 }
 
-// LLM provider (OpenAI-compatible). Works with Ollama, LM Studio, Groq, OpenAI, etc.
+// LLM provider (OpenAI-compatible). Works with Ollama, LM Studio, Groq, Gemini, OpenRouter, OpenAI, etc.
 // Configured ONLY via environment variables; keys never reach the browser.
+const LLM_PRESETS = {
+  ollama: { baseUrl: 'http://127.0.0.1:11434/v1', model: 'llama3.1', label: 'Ollama (local, free)' },
+  lmstudio: { baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', label: 'LM Studio (local)' },
+  groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant', label: 'Groq (free tier, key required)' },
+  gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-1.5-flash', label: 'Google Gemini (free tier, key required)' },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.1-8b-instruct:free', label: 'OpenRouter (free models, key required)' },
+  openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', label: 'OpenAI (paid, key required)' },
+};
+const llmPresetName = process.env.LLM_PRESET || '';
+const llmPreset = LLM_PRESETS[llmPresetName] || {};
 const llmConfig = {
-  baseUrl: process.env.LLM_BASE_URL || '',
+  preset: llmPresetName,
+  baseUrl: process.env.LLM_BASE_URL || llmPreset.baseUrl || '',
   apiKey: process.env.LLM_API_KEY || '',
-  model: process.env.LLM_MODEL || 'llama3.1',
+  model: process.env.LLM_MODEL || llmPreset.model || 'llama3.1',
   temperature: Number(process.env.LLM_TEMPERATURE || 0.4),
   timeoutMs: Number(process.env.LLM_TIMEOUT_MS || 30000),
-  configured: Boolean(process.env.LLM_BASE_URL),
+  configured: Boolean(process.env.LLM_BASE_URL || llmPreset.baseUrl),
 };
 
 function clampText(value, max = 2000) { return typeof value === 'string' ? value.slice(0, max) : ''; }
@@ -378,7 +389,8 @@ async function handleRequest(req, res) {
   const ip = req.socket.remoteAddress || 'unknown';
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
-  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: [...Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })), { kind: 'llm', provider: llmConfig.model, configured: llmConfig.configured }] }); }
+  if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: [...Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })), { kind: 'llm', provider: llmConfig.model, preset: llmConfig.preset || null, configured: llmConfig.configured }] }); }
+  if (req.method === 'GET' && url.pathname === '/api/llm/presets') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', active: llmConfig.preset || null, configured: llmConfig.configured, presets: Object.entries(LLM_PRESETS).map(([name, p]) => ({ name, label: p.label, baseUrl: p.baseUrl, model: p.model })) }); }
   if (req.method === 'GET' && url.pathname === '/api/feedback') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.slice(-50) }); }
   if (req.method === 'POST' && url.pathname === '/api/feedback') {
     try {
@@ -483,4 +495,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge, callLLM, runTaskWithLLM, matchKnowledge };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, loadStores, saveFeedback, saveKnowledge, callLLM, runTaskWithLLM, matchKnowledge };

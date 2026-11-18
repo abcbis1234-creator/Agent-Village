@@ -139,6 +139,25 @@ Video generation is a documented adapter placeholder. Wire a video provider (e.g
 
 By default Agent Village uses the deterministic local demo router. Set an **OpenAI-compatible** LLM endpoint to get real model-generated deliverables grounded in your knowledge notes. Works with Ollama, LM Studio, Groq, OpenAI, or any `/chat/completions` API.
 
+### Presets (one env var)
+
+```bash
+export LLM_PRESET="ollama"      # local, free, no key
+export LLM_PRESET="lmstudio"    # local
+export LLM_PRESET="groq"        # free tier — sign up for a key, then set LLM_API_KEY
+export LLM_PRESET="gemini"      # free tier — set LLM_API_KEY
+export LLM_PRESET="openrouter"  # free models — set LLM_API_KEY
+export LLM_PRESET="openai"      # paid
+```
+
+`LLM_BASE_URL` / `LLM_MODEL` override any preset. List presets at `GET /api/llm/presets`.
+
+**Honest caveats:**
+- "Free" means the provider's own free tier; accounts, rate limits, and terms of service apply. Using them requires *your* key — none are bundled.
+- Ollama and LM Studio are genuinely free and local, but quality and speed depend on your hardware.
+- Agent Village cannot connect to Kilo directly: Kilo is a coding agent, not an inference API. If your Kilo setup exposes an OpenAI-compatible local model endpoint, point `LLM_BASE_URL` at it.
+- This project cannot train or ship its own model; it orchestrates models you can reach.
+
 ```bash
 # Ollama (local, free)
 ollama pull llama3.1

@@ -310,3 +310,17 @@ test('LLM failure falls back to the demo router', async () => {
     llmConfig.baseUrl = original.baseUrl;
   }
 });
+
+test('LLM presets are exposed without secrets', async () => {
+  const res = await request('/api/llm/presets');
+  assert.strictEqual(res.status, 200);
+  assert.ok(Array.isArray(res.body.presets));
+  const names = res.body.presets.map((p) => p.name);
+  for (const name of ['ollama', 'lmstudio', 'groq', 'gemini', 'openrouter', 'openai']) {
+    assert.ok(names.includes(name), `presets should include ${name}`);
+  }
+  for (const p of res.body.presets) {
+    assert.ok(p.baseUrl && p.model && p.label, 'each preset has baseUrl, model, label');
+  }
+  assert.ok(!JSON.stringify(res.body).includes('apiKey'), 'presets must not expose keys');
+});
