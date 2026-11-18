@@ -67,7 +67,6 @@ function showProject(project) {
   $('#script').value = project?.script || '';
   $('#scene-list').replaceChildren(...(project?.scenes || []).map(sceneCard));
   $('#source-list').replaceChildren(...(project?.sources || []).map(sourceCard));
-  if (!project) { $('#scene-list').appendChild(sceneCard({ durationSeconds: 35 })); $('#source-list').appendChild(sourceCard()); }
   const approved = project?.status === 'approved';
   const reviewing = project?.status === 'review';
   $('#save-project').disabled = approved || reviewing;
@@ -90,6 +89,7 @@ async function refreshProjects(selectId = currentProject?.id) {
     button.addEventListener('click', () => loadProject(project.id));
     list.appendChild(button);
   });
+  return projects;
 }
 async function loadProject(id) {
   try { const { project } = await api(`/api/shorts/projects/${encodeURIComponent(id)}`); showProject(project); await refreshProjects(id); }
