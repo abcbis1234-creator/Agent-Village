@@ -133,6 +133,18 @@ export async function compositePexelsFootage(project, options = {}) {
   await stat(baseVideo).catch(() => { throw new Error('Toon2D final.mp4 is missing. Render all chunks and run the Toon2D join step first.'); });
   const plan = JSON.parse(await readFile(planPath, 'utf8'));
   const segments = planCompositeSegments(plan, project.scenes, options.footageOverrides || []);
+  const footageSegments = segments.filter((segment) => segment.footage);
+  if (!footageSegments.length) {
+    return {
+      status: 'unchanged',
+      outputPath: baseVideo,
+      durationSeconds: Number(plan.duration),
+      sceneCount: segments.length,
+      footageScenes: 0,
+      fallbackScenes: segments.length,
+      scenes: segments.map((segment) => ({ scene: segment.index + 1, usedPexels: false, fallbackReason: 'No Pexels clip available; retained the original Toon2D scene.' }))
+    };
+  }
   const ffmpeg = await resolveFfmpeg(options);
   const workDir = join(projectDir, 'pexels-composite');
   await mkdir(workDir, { recursive: true });
