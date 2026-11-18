@@ -39,6 +39,7 @@ export function normalizePexelsQuery(query) {
 }
 
 function touch(key, entry) {
+  entry.lastAccessAt = nowImplementation();
   cache.delete(key);
   cache.set(key, entry);
   while (cache.size > MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
@@ -93,28 +94,29 @@ function persistCache() {
   return persistenceQueue;
 }
 
-function cachedEntry(key) {
+async function cachedEntry(key) {
   const entry = cache.get(key);
   if (!entry) return null;
   touch(key, entry);
+  await persistCache();
   return entry;
 }
 
 async function waitForRequestSlot() {
-  const now = nowImplementation();
-  requestTimestamps = requestTimestamps.filter((time) => now - time < HOUR_MS);
-  if (requestTimestamps.length >= HOURLY_LIMIT) {
+  while (true) {
+    const now = nowImplementation();
+    requestTimestamps = requestTimestamps.filter((time) => now - time < HOUR_MS);
+    if (requestTimestamps.length < HOURLY_LIMIT) break;
     const waitForQuota = requestTimestamps[0] + HOUR_MS - now + 5;
     await delay(Math.max(1, waitForQuota));
   }
-  const afterQuota = nowImplementation();
-  requestTimestamps = requestTimestamps.filter((time) => afterQuota - time < HOUR_MS);
-  const quotaWait = requestTimestamps.length >= HOURLY_LIMIT
-    ? requestTimestamps[0] + HOUR_MS - afterQuota + 5 : 0;
-  if (quotaWait > 0) await delay(quotaWait);
 
-  const pacingWait = MIN_REQUEST_INTERVAL_MS - (nowImplementation() - lastRequestAt);
-  if (pacingWait > 0) await delay(pacingWait);
+  while (true) {
+    const pacingWait = MIN_REQUEST_INTERVAL_MS - (nowImplementation() - lastRequestAt);
+    if (pacingWait <= 0) break;
+    await delay(pacingWait);
+  }
+
   const startedAt = nowImplementation();
   lastRequestAt = startedAt;
   requestTimestamps.push(startedAt);
@@ -160,7 +162,7 @@ export async function fetchBackgroundVideo(query) {
   if (!cacheKey) return null;
   await loadCache();
 
-  const existing = cachedEntry(cacheKey);
+  const existing = await cachedEntry(cacheKey);
   const now = nowImplementation();
   if (existing && existing.expiresAt > now) return existing.data;
   if (inFlight.has(cacheKey)) return inFlight.get(cacheKey);
