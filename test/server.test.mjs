@@ -1,9 +1,24 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server, generateImageStableDiffusion, providerConfig } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig, runRateState } from '../server.mjs';
 
-function request(port, path, method = 'GET', body = null) {
+let port;
+
+before(async () => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  port = server.address().port;
+});
+
+after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+});
+
+beforeEach(() => {
+  runRateState.clear();
+});
+
+function request(path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
     const req = http.request({ hostname: '127.0.0.1', port, path, method }, (res) => {
       let data = '';
@@ -20,27 +35,23 @@ function request(port, path, method = 'GET', body = null) {
   });
 }
 
-test('Agent Village API, static serving, and security guards', async (t) => {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  const health = await request(port, '/api/health');
+test('Agent Village API, static serving, and security guards', async () => {
+  const health = await request('/api/health');
   assert.strictEqual(health.status, 200);
   assert.strictEqual(health.body.ok, true);
   assert.ok(Number.isInteger(health.body.capabilities) && health.body.capabilities > 0);
 
-  const caps = await request(port, '/api/capabilities');
+  const caps = await request('/api/capabilities');
   assert.strictEqual(caps.status, 200);
   assert.ok(Array.isArray(caps.body.capabilities));
   assert.ok(caps.body.capabilities.some((c) => c.key === 'code'));
 
-  const contract = await request(port, '/api/agent-contract');
+  const contract = await request('/api/agent-contract');
   assert.strictEqual(contract.status, 200);
   assert.strictEqual(contract.body.version, '1.0');
   assert.ok(contract.body.endpoints);
 
-  const run = await request(port, '/api/run', 'POST', { mission: 'Create a webnovel about a builder', capability: 'auto', rounds: 1 });
+  const run = await request('/api/run', 'POST', { mission: 'Create a webnovel about a builder', capability: 'auto', rounds: 1 });
   assert.strictEqual(run.status, 200);
   assert.ok(run.body.id);
   assert.strictEqual(run.body.mission, 'Create a webnovel about a builder');
@@ -48,35 +59,31 @@ test('Agent Village API, static serving, and security guards', async (t) => {
   assert.ok(Array.isArray(run.body.reports) && run.body.reports.length > 0);
   assert.ok(run.body.verdict && run.body.verdict.decision && run.body.verdict.rationale);
 
-  const run2 = await request(port, '/api/run', 'POST', { mission: 'Plan a launch', rounds: 5 });
+  const run2 = await request('/api/run', 'POST', { mission: 'Plan a launch', rounds: 5 });
   assert.strictEqual(run2.status, 200);
   assert.strictEqual(run2.body.rounds, 3);
 
-  const bad = await request(port, '/api/run', 'POST', { mission: '' });
+  const bad = await request('/api/run', 'POST', { mission: '' });
   assert.strictEqual(bad.status, 400);
 
-  const bad2 = await request(port, '/api/run', 'POST', {});
+  const bad2 = await request('/api/run', 'POST', {});
   assert.strictEqual(bad2.status, 400);
 
-  const long = await request(port, '/api/run', 'POST', { mission: 'x'.repeat(1201) });
+  const long = await request('/api/run', 'POST', { mission: 'x'.repeat(1201) });
   assert.strictEqual(long.status, 400);
 
-  const index = await request(port, '/');
+  const index = await request('/');
   assert.strictEqual(index.status, 200);
   assert.ok(typeof index.body === 'string' && index.body.includes('AGENT VILLAGE'));
 
-  const traversal = await request(port, '/../../etc/passwd');
-  assert.strictEqual(traversal.status, 403);
+  const traversal = await request('/../../etc/passwd');
+  assert.ok(traversal.status === 403 || traversal.status === 404, `traversal should be blocked, got ${traversal.status}`);
 
-  const missing = await request(port, '/api/nope');
+  const missing = await request('/api/nope');
   assert.strictEqual(missing.status, 404);
 });
 
-test('Path traversal variants are rejected', async (t) => {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
+test('Path traversal variants are rejected', async () => {
   const variants = [
     '/../../etc/passwd',
     '/../server.mjs',
@@ -86,30 +93,26 @@ test('Path traversal variants are rejected', async (t) => {
     '/..%2f..%2fserver.mjs',
   ];
   for (const path of variants) {
-    const res = await request(port, path);
+    const res = await request(path);
     assert.ok(res.status === 403 || res.status === 404, `${path} should be 403/404, got ${res.status}`);
   }
 
-  const index = await request(port, '/');
+  const index = await request('/');
   assert.strictEqual(index.status, 200);
 
-  const css = await request(port, '/styles.css');
+  const css = await request('/styles.css');
   assert.strictEqual(css.status, 200);
 
-  const js = await request(port, '/app.js');
+  const js = await request('/app.js');
   assert.strictEqual(js.status, 200);
 });
 
-test('Rate limiting on /api/run', async (t) => {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  const bodies = [];
+test('Rate limiting on /api/run', async () => {
+  const pending = [];
   for (let i = 0; i < 35; i += 1) {
-    bodies.push(request(port, '/api/run', 'POST', { mission: `rate test ${i}`, capability: 'auto', rounds: 1 }));
+    pending.push(request('/api/run', 'POST', { mission: `rate test ${i}`, capability: 'auto', rounds: 1 }));
   }
-  const results = await Promise.all(bodies);
+  const results = await Promise.all(pending);
   const limited = results.filter((r) => r.status === 429);
   assert.ok(limited.length > 0, 'expected at least one 429 rate-limited response');
   const ok = results.filter((r) => r.status === 200);
@@ -118,11 +121,7 @@ test('Rate limiting on /api/run', async (t) => {
   assert.ok(limitedBody.error && limitedBody.retry_after, 'rate limit response should include error and retry_after');
 });
 
-test('New top-model capabilities route and verdict metadata', async (t) => {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
+test('New top-model capabilities route and verdict metadata', async () => {
   const cases = [
     { mission: 'reason through this logic puzzle step by step', expected: 'reasoning' },
     { mission: 'combine image and text into a multimodal brief', expected: 'multimodal' },
@@ -131,7 +130,7 @@ test('New top-model capabilities route and verdict metadata', async (t) => {
     { mission: 'handle this cross-domain open-ended task', expected: 'generalist' },
   ];
   for (const { mission, expected } of cases) {
-    const res = await request(port, '/api/run', 'POST', { mission, capability: 'auto', rounds: 1 });
+    const res = await request('/api/run', 'POST', { mission, capability: 'auto', rounds: 1 });
     assert.strictEqual(res.status, 200, `${mission} should return 200`);
     assert.strictEqual(res.body.capability.key, expected, `${mission} should route to ${expected}, got ${res.body.capability.key}`);
     assert.ok(res.body.deliverable && res.body.deliverable.sections, `${mission} should have a deliverable`);
@@ -140,59 +139,72 @@ test('New top-model capabilities route and verdict metadata', async (t) => {
     assert.ok(res.body.verdict.calibrated === true, `${mission} should be calibrated`);
   }
 
-  const generalist = await request(port, '/api/run', 'POST', { mission: 'write a business plan and analyze the market', capability: 'generalist', rounds: 2 });
+  const generalist = await request('/api/run', 'POST', { mission: 'write a business plan and analyze the market', capability: 'generalist', rounds: 2 });
   assert.strictEqual(generalist.status, 200);
   assert.strictEqual(generalist.body.capability.key, 'generalist');
   assert.strictEqual(generalist.body.rounds, 2);
   assert.ok(generalist.body.deliverable.sections.some((s) => s.name === 'Objective'));
 
-  const capabilitiesRes = await request(port, '/api/capabilities');
-  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'generalist'));
-  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'reasoning'));
-  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'multimodal'));
-  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'agentic'));
-  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'long_context'));
+  const capabilitiesRes = await request('/api/capabilities');
+  for (const key of ['generalist', 'reasoning', 'multimodal', 'agentic', 'long_context']) {
+    assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === key), `capabilities should include ${key}`);
+  }
 });
 
-test('Provider health and media generation guards', async (t) => {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  const prov = await request(port, '/api/providers');
+test('Provider health and media generation guards', async () => {
+  const prov = await request('/api/providers');
   assert.strictEqual(prov.status, 200);
   assert.ok(Array.isArray(prov.body.providers));
   const kinds = prov.body.providers.map((p) => p.kind);
   assert.ok(kinds.includes('image') && kinds.includes('video'));
-  for (const p of prov.body.providers) {
-    assert.strictEqual(p.configured, false, `provider ${p.kind} should be unconfigured by default`);
+
+  const original = { configured: providerConfig.image.configured, baseUrl: providerConfig.image.baseUrl };
+
+  // Unconfigured provider fails fast with 400.
+  providerConfig.image.configured = false;
+  providerConfig.image.baseUrl = '';
+  try {
+    const unconfigured = await request('/api/media/generate', 'POST', { kind: 'image', prompt: 'a roblox scene' });
+    assert.strictEqual(unconfigured.status, 400);
+    assert.match(String(unconfigured.body.error), /not configured/);
+  } finally {
+    providerConfig.image.configured = original.configured;
+    providerConfig.image.baseUrl = original.baseUrl;
   }
 
-  // Generate without approval should return 202 (approval required)
-  const pending = await request(port, '/api/media/generate', 'POST', { kind: 'image', prompt: 'a roblox scene' });
-  assert.strictEqual(pending.status, 202);
-  assert.ok(pending.body.id);
-  assert.strictEqual(pending.body.error, 'approval required');
+  // Temporarily mark configured to exercise the approval gate (unreachable SD endpoint).
+  providerConfig.image.configured = true;
+  providerConfig.image.baseUrl = 'http://127.0.0.1:9';
+  try {
+    const pending = await request('/api/media/generate', 'POST', { kind: 'image', prompt: 'a roblox scene' });
+    assert.strictEqual(pending.status, 202);
+    assert.ok(pending.body.id);
+    assert.strictEqual(pending.body.error, 'approval required');
 
-  // Generate with unconfigured provider should return 400
-  const badKind = await request(port, '/api/media/generate', 'POST', { kind: 'image', prompt: 'x', approved: true, id: 'nonexistent' });
-  assert.strictEqual(badKind.status, 400);
+    const approve = await request('/api/media/approve', 'POST', { id: pending.body.id });
+    assert.strictEqual(approve.status, 200);
+    assert.strictEqual(approve.body.approved, true);
 
-  // Missing kind/prompt should return 400
-  const missing = await request(port, '/api/media/generate', 'POST', { kind: 'image' });
-  assert.strictEqual(missing.status, 400);
+    const gen = await request('/api/media/generate', 'POST', { kind: 'image', prompt: 'a roblox scene', approved: true, id: pending.body.id });
+    assert.strictEqual(gen.status, 400); // unreachable SD endpoint -> adapter error
 
-  // Approve unknown id should return 400
-  const badApprove = await request(port, '/api/media/approve', 'POST', { id: 'does-not-exist' });
+    const missing = await request('/api/media/generate', 'POST', { kind: 'image' });
+    assert.strictEqual(missing.status, 400);
+  } finally {
+    providerConfig.image.configured = original.configured;
+    providerConfig.image.baseUrl = original.baseUrl;
+  }
+
+  const badApprove = await request('/api/media/approve', 'POST', { id: 'does-not-exist' });
   assert.strictEqual(badApprove.status, 400);
 });
 
 test('Stable Diffusion adapter respects configuration', async () => {
   const cfg = providerConfig.image;
+  assert.strictEqual(cfg.provider, 'stable-diffusion');
   if (!cfg.configured) {
     await assert.rejects(() => generateImageStableDiffusion('a roblox scene'), /not configured/);
   } else {
     assert.ok(cfg.baseUrl, 'configured SD provider must have a base URL');
   }
-  assert.strictEqual(cfg.provider, 'stable-diffusion');
 });

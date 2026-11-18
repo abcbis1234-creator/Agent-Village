@@ -138,6 +138,7 @@ const keywordRoutes = [
   ['analysis', ['analyze', 'analysis', 'trade-off', 'evaluate', 'should we', 'risk', 'decision']],
   ['data', ['data', 'dataset', 'csv', 'metrics', 'table', 'database', 'statistics']],
   ['creative', ['idea', 'ideas', 'creative', 'name', 'concept', 'design', 'brainstorm', 'prompt']],
+  ['generalist', ['cross-domain', 'open-ended', 'generalist', 'jack of all trades', 'anything', 'general task']],
 ];
 
 function cleanMission(value) {
@@ -206,7 +207,7 @@ async function runTask(body) {
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
-function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': data.length }); res.end(data); }
+function send(res, status, body, type = 'application/json; charset=utf-8') { const data = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)); res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': data.length }); res.end(data); }
 function serveFrom(baseDir, pathname, res) { const safe = pathname === '/' ? 'index.html' : pathname.replace(/^\//, ''); if (safe.includes('..')) return send(res, 403, { error: 'forbidden' }); const file = resolve(baseDir, safe); if (file !== baseDir && !file.startsWith(baseDir + sep)) return send(res, 403, { error: 'forbidden' }); return stat(file).then((st) => { if (!st.isFile()) return send(res, 404, { error: 'not_found' }); return readFile(file); }).then((data) => send(res, 200, data, contentTypes[extname(file)] || 'application/octet-stream')).catch(() => send(res, 404, { error: 'not_found' })); }
 function staticFile(pathname, res) { return serveFrom(publicDir, pathname, res); }
 
@@ -279,8 +280,9 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMainModule = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion };
+export { server, port, publicDir, mediaDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion };
