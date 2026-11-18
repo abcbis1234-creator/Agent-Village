@@ -10,7 +10,8 @@ const env = {
 
 test('provider status reveals configuration but never credentials', () => {
   const providers = listModelProviders(env);
-  assert.equal(providers.length, 3);
+  assert.equal(providers.length, 4);
+  assert.ok(providers.some((item) => item.id === 'ollama' && item.configured));
   assert.ok(providers.every((item) => item.configured));
   assert.ok(providers.every((item) => !Object.hasOwn(item, 'key')));
 });
@@ -46,4 +47,15 @@ test('comparison reports individual provider failures without hiding successful 
   assert.equal(result.successful, 1);
   assert.equal(result.results[0].text, 'A');
   assert.equal(result.results[1].ok, false);
+});
+
+test('Ollama local chat endpoint works without an API key', async () => {
+  let captured;
+  const result = await generateWithModel({ provider: 'ollama', prompt: 'Say hello', env: {}, fetchImpl: async (url, options) => {
+    captured = { url, body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ message: { content: 'Hello from local model.' } }), { status: 200 });
+  }});
+  assert.equal(captured.url, 'http://127.0.0.1:11434/api/chat');
+  assert.equal(captured.body.model, 'llama3.2');
+  assert.equal(result.text, 'Hello from local model.');
 });
