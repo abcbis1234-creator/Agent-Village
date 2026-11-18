@@ -252,12 +252,14 @@ test('Feedback corrections drive routing; knowledge injects into deliverables', 
 });
 
 test('LLM provider generates via an OpenAI-compatible endpoint', async () => {
+  const captured = [];
   const mock = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch { /* ignore */ }
+      captured.push(parsed);
       assert.strictEqual(parsed.model, 'mock-model');
       const content = JSON.stringify({
         decision: 'LLM decision for the mission',
@@ -288,6 +290,14 @@ test('LLM provider generates via an OpenAI-compatible endpoint', async () => {
     assert.ok(res.body.deliverable.sections.some((s) => s.name === 'Section A'));
     assert.ok(res.body.reports.length >= 5);
     assert.ok(res.body.reports.every((r) => /LLM/.test(r.source)));
+
+    // Prompt-injection hardening: untrusted text is delimited and flagged as data.
+    assert.ok(captured.length > 0, 'mock LLM should have received a request');
+    const userMsg = captured[0].messages.find((m) => m.role === 'user').content;
+    const systemMsg = captured[0].messages.find((m) => m.role === 'system').content;
+    assert.ok(userMsg.includes('<<<MISSION_START>>>') && userMsg.includes('<<<MISSION_END>>>'));
+    assert.ok(userMsg.includes('<<<KNOWLEDGE_START>>>') && userMsg.includes('<<<KNOWLEDGE_END>>>'));
+    assert.match(systemMsg, /untrusted/i);
   } finally {
     llmConfig.configured = original.configured;
     llmConfig.baseUrl = original.baseUrl;
@@ -323,4 +333,10 @@ test('LLM presets are exposed without secrets', async () => {
     assert.ok(p.baseUrl && p.model && p.label, 'each preset has baseUrl, model, label');
   }
   assert.ok(!JSON.stringify(res.body).includes('apiKey'), 'presets must not expose keys');
+});
+
+test('Audit trail is exposed read-only', async () => {
+  const res = await request('/api/audit');
+  assert.strictEqual(res.status, 200);
+  assert.ok(Array.isArray(res.body.audit));
 });

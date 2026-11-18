@@ -1,0 +1,20 @@
+[
+  { "mission": "What is 15% of 240?", "expect": "calculator" },
+  { "mission": "Write a short product description for a ceramic mug", "expect": "writing" },
+  { "mission": "Brainstorm five names for a cozy game studio", "expect": "creative" },
+  { "mission": "Plan a three-day launch for a habit app", "expect": "planning" },
+  { "mission": "Research budget laptops and list evidence gaps", "expect": "research" },
+  { "mission": "Design a schema and metrics for a dashboard", "expect": "data" },
+  { "mission": "Design a 30-second TikTok video for a Roblox story", "expect": "video" },
+  { "mission": "Create a webnovel premise about a hidden village", "expect": "webnovel" },
+  { "mission": "Build an API for a task manager with tests", "expect": "code" },
+  { "mission": "Define a website slice with routes and acceptance criteria", "expect": "website" },
+  { "mission": "Design an automation with approval gates", "expect": "automation" },
+  { "mission": "Reason step by step through a logic puzzle", "expect": "reasoning" },
+  { "mission": "Synthesize this long document into a summary", "expect": "long_context" },
+  { "mission": "Combine image and text into a multimodal brief", "expect": "multimodal" },
+  { "mission": "Plan an agentic workflow with tool boundaries", "expect": "agentic" },
+  { "mission": "Handle this cross-domain open-ended task", "expect": "generalist" },
+  { "mission": "Create an image brief for a poster", "expect": "image" },
+  { "mission": "Write an audio voiceover script", "expect": "audio" }
+]

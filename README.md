@@ -27,6 +27,9 @@ npm run check
 # run the server (defaults to http://localhost:3000)
 npm start
 
+# evaluation harness against golden missions
+npm run eval
+
 # run with a custom port
 PORT=8080 npm start
 ```
@@ -213,9 +216,35 @@ docker run -p 3000:3000 agent-village
 
 The container runs as a non-root user and exposes a health endpoint on port 3000.
 
+### Docker Compose (with local Ollama)
+
+```bash
+docker compose up -d
+docker compose exec ollama ollama pull llama3.1
+```
+
+This runs Agent Village on `http://localhost:3000` and Ollama on `:11434`, pre-wired via `LLM_PRESET=ollama`. Edit `docker-compose.yml` to add `SD_BASE_URL` when you run a Stable Diffusion service.
+
 ## Upgrade posture
 
 Treat each accepted improvement as a checkpoint. Add new connectors behind explicit capability modules, keep user approval visible for consequential actions, and do not turn on unattended automation merely because a connector exists. See `AGENT_HANDOFF.md` and `TODO.md`.
+
+## Roadmap (honest)
+
+No single feature creates a breakthrough. These are the highest-leverage next steps, ranked by impact vs. risk.
+
+| Upgrade | Why it matters | Effort | Risk |
+|---|---|---|---|
+| **Streaming responses (SSE)** | Live token output; feels real; enables cancellation | M | Low |
+| **Tool use with approval gates** | Let the model call allow-listed tools (calculator, knowledge search, image gen) with approval + audit | L | High |
+| **Embedding-based memory** | Replace keyword retrieval with semantic search (OpenAI-compatible `/embeddings` or local) | M | Low |
+| **SQLite persistence** | Missions, feedback, knowledge, and audit in one durable, concurrency-safe store | M | Low |
+| **Multi-role model routing** | Planner on a strong model, critic on a cheap/fast one for cost/latency control | M | Medium |
+| **Auth + multi-user** | Token auth for write endpoints; per-user history | M | Medium |
+| **Observability** | Structured JSON logs, request IDs, `/metrics` | S | Low |
+| **Adversarial eval suite** | Golden set of prompt-injection cases alongside routing evals | S | Low |
+
+Already in place: evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), provider presets, approval-gated media, and feedback/knowledge memory.
 
 ## Security
 
