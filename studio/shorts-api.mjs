@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import {
   approveShortsProject,
   createShortsProject,
@@ -10,6 +11,15 @@ import {
 import { prepareToon2dProject } from './toon2d-adapter.mjs';
 import { fetchBackgroundVideo, getCacheStats, purgeCache } from './pexels-service.mjs';
 import { compositePexelsFootage } from './pexels-compositor.mjs';
+
+function isAuthorizedReviewer(req) {
+  const expected = process.env.SHORTS_REVIEW_TOKEN;
+  const supplied = req.headers?.['x-review-token'];
+  if (!expected || typeof supplied !== 'string') return false;
+  const expectedBytes = Buffer.from(expected);
+  const suppliedBytes = Buffer.from(supplied);
+  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
+}
 
 function send(res, status, body) {
   const data = Buffer.from(JSON.stringify(body));
@@ -67,6 +77,10 @@ export async function handleShortsApi(req, res, url) {
       return true;
     }
     if (req.method === 'POST' && action) {
+      if (['approve', 'reject', 'prepare-render', 'composite'].includes(action) && !isAuthorizedReviewer(req)) {
+        send(res, 403, { error: 'reviewer_authorization_required' });
+        return true;
+      }
       const body = await readBody(req);
       const note = typeof body.note === 'string' ? body.note : '';
       if (action === 'composite') {
