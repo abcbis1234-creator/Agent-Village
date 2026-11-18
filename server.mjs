@@ -14,6 +14,18 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'"
 };
 
+const RUN_RATE_LIMIT = { windowMs: 60 * 1000, max: 30 };
+const runRateState = new Map();
+function logRequest(req, status) { console.log(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}`); }
+function rateLimitRun(ip) {
+  const now = Date.now();
+  const entry = runRateState.get(ip) || { count: 0, reset: now + RUN_RATE_LIMIT.windowMs };
+  if (now > entry.reset) { entry.count = 0; entry.reset = now + RUN_RATE_LIMIT.windowMs; }
+  entry.count += 1;
+  runRateState.set(ip, entry);
+  return entry.count <= RUN_RATE_LIMIT.max;
+}
+
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
   ['research', 'Research', 'RS', 'Frame questions, surface evidence gaps, and compare options.', ['question map', 'evidence gaps', 'source plan']],
@@ -109,22 +121,36 @@ function staticFile(pathname, res) { const safe = pathname === '/' ? 'index.html
 
 async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
-  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length });
-  if (req.method === 'GET' && url.pathname === '/api/capabilities') return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities });
-  if (req.method === 'GET' && url.pathname === '/api/agent-contract') return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } });
-  if (req.method === 'GET' && url.pathname === '/manus-routes.json') return staticFile('/manus-routes.json', res);
+  const ip = req.socket.remoteAddress || 'unknown';
+  if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
+  if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
+  if (req.method === 'GET' && url.pathname === '/api/agent-contract') { logRequest(req, 200); return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } }); }
+  if (req.method === 'GET' && url.pathname === '/manus-routes.json') { logRequest(req, 200); return staticFile('/manus-routes.json', res); }
   if (req.method === 'POST' && url.pathname === '/api/run') {
-    try { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); } return send(res, 200, await runTask(JSON.parse(raw || '{}'))); }
-    catch (error) { return send(res, 400, { error: error.message || 'request failed' }); }
+    if (!rateLimitRun(ip)) { logRequest(req, 429); return send(res, 429, { error: 'rate limit exceeded', retry_after: Math.ceil(RUN_RATE_LIMIT.windowMs / 1000) }); }
+    try { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); } const result = await runTask(JSON.parse(raw || '{}')); logRequest(req, 200); return send(res, 200, result); }
+    catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
   }
-  if (req.method === 'GET') return staticFile(url.pathname, res);
+  if (req.method === 'GET') { return staticFile(url.pathname, res); }
+  logRequest(req, 404);
   return send(res, 404, { error: 'not_found' });
 }
 
 const server = createServer(handleRequest);
 
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Agent Village received ${signal}, shutting down gracefully…`);
+  server.close(() => { console.log('Agent Village closed.'); process.exit(0); });
+  setTimeout(() => { console.log('Forced shutdown after timeout.'); process.exit(1); }, 10000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, runTask, capabilities, cleanMission };
+export { server, port, publicDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT };

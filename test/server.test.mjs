@@ -71,3 +71,49 @@ test('Agent Village API, static serving, and security guards', async (t) => {
   const missing = await request(port, '/api/nope');
   assert.strictEqual(missing.status, 404);
 });
+
+test('Path traversal variants are rejected', async (t) => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const variants = [
+    '/../../etc/passwd',
+    '/../server.mjs',
+    '/./../package.json',
+    '/public/../server.mjs',
+    '/%2e%2e/%2e%2e/server.mjs',
+    '/..%2f..%2fserver.mjs',
+  ];
+  for (const path of variants) {
+    const res = await request(port, path);
+    assert.ok(res.status === 403 || res.status === 404, `${path} should be 403/404, got ${res.status}`);
+  }
+
+  const index = await request(port, '/');
+  assert.strictEqual(index.status, 200);
+
+  const css = await request(port, '/styles.css');
+  assert.strictEqual(css.status, 200);
+
+  const js = await request(port, '/app.js');
+  assert.strictEqual(js.status, 200);
+});
+
+test('Rate limiting on /api/run', async (t) => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const bodies = [];
+  for (let i = 0; i < 35; i += 1) {
+    bodies.push(request(port, '/api/run', 'POST', { mission: `rate test ${i}`, capability: 'auto', rounds: 1 }));
+  }
+  const results = await Promise.all(bodies);
+  const limited = results.filter((r) => r.status === 429);
+  assert.ok(limited.length > 0, 'expected at least one 429 rate-limited response');
+  const ok = results.filter((r) => r.status === 200);
+  assert.ok(ok.length > 0, 'expected at least one successful response before limit');
+  const limitedBody = limited[0].body;
+  assert.ok(limitedBody.error && limitedBody.retry_after, 'rate limit response should include error and retry_after');
+});
