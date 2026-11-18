@@ -275,15 +275,34 @@ async function runMission(event) {
   if (townSubtitle) townSubtitle.textContent = 'Routing → reports → verification → Decider';
 
   try {
-    const response = await fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mission, rounds, capability }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Mission failed');
+    let payload = { mission, rounds, capability };
+    let result = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (response.status === 202 && data.id && attempt === 0) {
+        const approve = window.confirm(`Approve tool "${data.tool}"?\n${JSON.stringify(data.args).slice(0, 300)}`);
+        if (!approve) throw new Error('Tool approval declined');
+        await fetch('/api/tools/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: data.id }),
+        });
+        payload = { mission, rounds, capability, approvedTools: [data.id] };
+        continue;
+      }
+      if (!response.ok) throw new Error(data.error || 'Mission failed');
+      result = data;
+      break;
+    }
+    if (!result) throw new Error('Mission did not complete');
     drawOutput(result);
     saveHistory(result);
+    (result.toolTrace || []).forEach((t) => addActivity(`Tool · ${t.tool}`, String(t.result).slice(0, 120), 'done'));
     if (dialog) dialog.close();
   } catch (error) {
     setWorkbenchStatus('BLOCKED', 'LOW');

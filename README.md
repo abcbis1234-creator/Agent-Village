@@ -190,6 +190,23 @@ When configured:
 
 `GET /api/providers` reports the `llm` provider and model (never the key). No keys reach the browser, and the model never modifies code.
 
+## Tool use (allow-listed, approval-gated)
+
+When an LLM is configured, the model can call a fixed allow-list of tools instead of guessing.
+
+| Tool | Consequence | What it does |
+|---|---|---|
+| `calculator` | safe | Evaluate arithmetic (real parser, no `eval`) |
+| `knowledge_search` | safe | Keyword-search stored knowledge notes |
+| `knowledge_list` | safe | List all knowledge notes |
+| `image_generate` | **consequential** | Generate an image with Stable Diffusion |
+| `feedback_save` | **consequential** | Save a routing correction |
+
+- Safe tools execute immediately; the result is fed back to the model, which then writes the final deliverable.
+- Consequential tools return `202` with an approval id. Approve via `POST /api/tools/approve { id }`, then re-run `/api/run` with `approvedTools: [id]`. Approval is one-time and matches the exact tool + args.
+- The loop is bounded to 5 model turns to prevent runaway.
+- Every tool call is audited (`GET /api/audit`), and the allow-list is public via `GET /api/tools`.
+
 ## Learning and memory (what it can and cannot do)
 
 Agent Village has **no trained model**. Routing is deterministic keyword scoring plus templates, so there is nothing to "retrain." What it supports instead is a **persistent memory layer**:
@@ -236,7 +253,6 @@ No single feature creates a breakthrough. These are the highest-leverage next st
 | Upgrade | Why it matters | Effort | Risk |
 |---|---|---|---|
 | **Streaming responses (SSE)** | Live token output; feels real; enables cancellation | M | Low |
-| **Tool use with approval gates** | Let the model call allow-listed tools (calculator, knowledge search, image gen) with approval + audit | L | High |
 | **Embedding-based memory** | Replace keyword retrieval with semantic search (OpenAI-compatible `/embeddings` or local) | M | Low |
 | **SQLite persistence** | Missions, feedback, knowledge, and audit in one durable, concurrency-safe store | M | Low |
 | **Multi-role model routing** | Planner on a strong model, critic on a cheap/fast one for cost/latency control | M | Medium |
@@ -244,7 +260,7 @@ No single feature creates a breakthrough. These are the highest-leverage next st
 | **Observability** | Structured JSON logs, request IDs, `/metrics` | S | Low |
 | **Adversarial eval suite** | Golden set of prompt-injection cases alongside routing evals | S | Low |
 
-Already in place: evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), provider presets, approval-gated media, and feedback/knowledge memory.
+Already in place: tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), provider presets, approval-gated media, and feedback/knowledge memory.
 
 ## Security
 

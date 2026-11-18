@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { server, generateImageStableDiffusion, providerConfig, llmConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge } from '../server.mjs';
+import { server, generateImageStableDiffusion, providerConfig, llmConfig, runRateState, feedbackStore, knowledgeStore, saveFeedback, saveKnowledge, toolApprovalState, evaluateExpression } from '../server.mjs';
 
 let port;
 
@@ -339,4 +339,94 @@ test('Audit trail is exposed read-only', async () => {
   const res = await request('/api/audit');
   assert.strictEqual(res.status, 200);
   assert.ok(Array.isArray(res.body.audit));
+});
+
+test('Calculator tool evaluates safe expressions only', async () => {
+  assert.strictEqual(evaluateExpression('15/100*240'), 36);
+  assert.strictEqual(evaluateExpression('(2+3)*4'), 20);
+  assert.strictEqual(evaluateExpression('10%3'), 1);
+  assert.throws(() => evaluateExpression('1+'));
+  assert.throws(() => evaluateExpression('process.exit()'));
+});
+
+test('LLM safe tool use: calculator executes and feeds back', async () => {
+  let calls = 0;
+  const captured = [];
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      captured.push(JSON.parse(body));
+      calls += 1;
+      const content = calls === 1
+        ? JSON.stringify({ tool: 'calculator', args: { expression: '15/100*240' } })
+        : JSON.stringify({ decision: 'The answer is 36', rationale: 'Computed with the calculator', dissent: '', next_actions: ['verify'], confidence: 'high', deliverable: { title: 'Answer', sections: [{ name: 'Result', content: '36' }] }, reports: [] });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, model: llmConfig.model };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mock.address().port}`;
+  llmConfig.model = 'mock-model';
+  try {
+    const res = await request('/api/run', 'POST', { mission: 'calculate 15 percent of 240', capability: 'calculator', rounds: 1 });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.body.toolTrace) && res.body.toolTrace.length === 1);
+    assert.strictEqual(res.body.toolTrace[0].tool, 'calculator');
+    assert.match(res.body.toolTrace[0].result, /36/);
+    const secondUser = captured[1].messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n');
+    assert.ok(secondUser.includes('Tool calculator result'));
+    const toolsListed = captured[0].messages.find((m) => m.role === 'system').content;
+    assert.ok(toolsListed.includes('calculator') && toolsListed.includes('image_generate'));
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.model = original.model;
+    await new Promise((resolve) => mock.close(resolve));
+  }
+});
+
+test('Consequential tool requires approval before execution', async () => {
+  let calls = 0;
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      calls += 1;
+      const content = calls <= 2
+        ? JSON.stringify({ tool: 'image_generate', args: { prompt: 'a test image' } })
+        : JSON.stringify({ decision: 'Image request handled', rationale: 'r', dissent: '', next_actions: [], confidence: 'low', deliverable: { title: 'D', sections: [] }, reports: [] });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, model: llmConfig.model };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mock.address().port}`;
+  llmConfig.model = 'mock-model';
+  try {
+    const first = await request('/api/run', 'POST', { mission: 'generate a test image', capability: 'image', rounds: 1 });
+    assert.strictEqual(first.status, 202);
+    assert.ok(first.body.id);
+    assert.strictEqual(first.body.tool, 'image_generate');
+    assert.strictEqual(first.body.args.prompt, 'a test image');
+
+    const approve = await request('/api/tools/approve', 'POST', { id: first.body.id });
+    assert.strictEqual(approve.status, 200);
+    assert.strictEqual(approve.body.approved, true);
+
+    const second = await request('/api/run', 'POST', { mission: 'generate a test image', capability: 'image', rounds: 1, approvedTools: [first.body.id] });
+    assert.strictEqual(second.status, 200);
+    assert.ok(Array.isArray(second.body.toolTrace));
+    assert.strictEqual(second.body.toolTrace[0].tool, 'image_generate');
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.model = original.model;
+    toolApprovalState.clear();
+    await new Promise((resolve) => mock.close(resolve));
+  }
 });
