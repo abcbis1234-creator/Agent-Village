@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { handleShortsApi } from './studio/shorts-api.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
@@ -101,6 +102,7 @@ function staticFile(pathname, res) { const safe = normalize(pathname).replace(/^
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (await handleShortsApi(req, res, url)) return;
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length });
   if (req.method === 'GET' && url.pathname === '/api/capabilities') return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities });
   if (req.method === 'GET' && url.pathname === '/api/agent-contract') return send(res, 200, { version: '1.0', project: 'agent-village', purpose: 'bounded contribution contract for external AI agents', endpoints: { capabilities: 'GET /api/capabilities', run: 'POST /api/run' }, run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' }, return_shape: ['capability', 'deliverable', 'reports', 'verdict'], contribution_policy: ['propose changes as structured deliverables or patches', 'never request or return browser-side secrets', 'require human review before publish or consequential external action'], collaboration: { preferred: 'canonical Git branch or reviewed pull request', alternative: 'server-side adapter that implements the same contract' } });
