@@ -28,6 +28,11 @@ function rateLimitRun(ip) {
 
 const capabilities = [
   ['auto', 'Auto route', 'AR', 'Choose the best specialist path from the mission.', ['router', 'council', 'verifier']],
+  ['generalist', 'Jack of All Trades', 'JA', 'Handle any open-ended task across reasoning, code, writing, and analysis.', ['general reasoning', 'multi-domain', 'bounded synthesis']],
+  ['reasoning', 'Deep Reasoning', 'RE', 'Work through complex problems step by step with chain-of-thought and self-correction.', ['chain-of-thought', 'self-correction', 'proof sketch']],
+  ['multimodal', 'Multimodal', 'MM', 'Reason across text, images, audio, and structured media in one brief.', ['image understanding', 'audio brief', 'cross-modal synthesis']],
+  ['agentic', 'Agentic / Tool Use', 'AG', 'Plan and execute bounded tasks with tool calls, approval gates, and audit trails.', ['tool use', 'approval gate', 'audit trail']],
+  ['long_context', 'Long Context', 'LC', 'Synthesize very large documents, codebases, and datasets into bounded deliverables.', ['document synthesis', 'codebase map', 'extraction']],
   ['research', 'Research', 'RS', 'Frame questions, surface evidence gaps, and compare options.', ['question map', 'evidence gaps', 'source plan']],
   ['code', 'Code & build', 'CB', 'Turn a software goal into architecture, tests, and a safe build slice.', ['architecture', 'test plan', 'sandbox boundary']],
   ['writing', 'Writing', 'WR', 'Shape a brief, article, script, product copy, or clear explanation.', ['outline', 'tone pass', 'editor']],
@@ -47,6 +52,10 @@ const capabilities = [
 
 const keywordRoutes = [
   ['calculator', ['calculate', 'compute', 'what is', 'math', 'percent', 'divide', 'multiply']],
+  ['agentic', ['agent', 'autonomous', 'tool use', 'tool-call', 'workflow agent', 'execute task', 'run task']],
+  ['long_context', ['summarize', 'document', 'codebase', 'large file', 'long text', 'extract from', 'read the file']],
+  ['multimodal', ['image and text', 'multimodal', 'vision', 'photo', 'screenshot', 'diagram']],
+  ['reasoning', ['reason', 'logic', 'proof', 'step by step', 'chain of thought', 'solve', 'theorem', 'puzzle']],
   ['webnovel', ['webnovel', 'novel', 'chapter', 'fiction', 'serial', 'story arc', 'characters']],
   ['video', ['video', 'film', 'short', 'reel', 'tiktok', 'youtube', 'shot list', 'storyboard']],
   ['image', ['image', 'illustration', 'poster', 'logo', 'thumbnail', 'artwork']],
@@ -85,6 +94,12 @@ function deliverable(mission, key, info) {
     audio: [['Purpose', mission], ['Script', 'Write exact spoken words separately from delivery style, pronunciation, language, and accent.'], ['Sound', 'Specify music, ambience, action effects, space, timing, and what must remain intelligible.'], ['Mix notes', 'Keep dialogue clear, preserve action cues, and verify rendered duration and tail.']],
     website: [['Product slice', mission], ['Routes', 'Home, primary workflow, detail view, and a clear empty/error state.'], ['Components', 'Navigation, task composer, status surface, result panel, history, and settings boundary.'], ['Acceptance', 'A user can complete the core task, understand what happened, and recover from failure without hidden state.']],
     automation: [['Trigger', mission], ['Workflow', 'Trigger → validate → perform bounded work → request approval where needed → record outcome.'], ['Guardrails', 'Idempotency, timeout, retry ceiling, secret handling, human approval, and audit record.'], ['Failure path', 'Stop safely, preserve context, report the exact stage, and never silently repeat an external action.']],
+    local_ops: [['Workspace scope', 'Define the local directories and resources the worker may touch.'], ['Permission gate', 'List the operations requiring explicit human approval.'], ['Audit trail', 'Record every action, input, output, and approval for later review.']],
+    generalist: [['Objective', mission], ['Domain scan', 'Identify the relevant domains (code, writing, analysis, research, planning) and the constraints in each.'], ['Bounded plan', 'Propose the smallest useful slice that produces a visible result and a review gate.'], ['Cross-domain synthesis', 'Combine insights from multiple domains into one coherent recommendation.'], ['Next actions', 'List review, testing, and expansion steps, ranked by risk and value.']],
+    reasoning: [['Problem', mission], ['Chain of thought', 'Break the problem into explicit steps, stating assumptions at each step.'], ['Self-correction', 'Identify the weakest link and how to test or revise it.'], ['Proof sketch', 'Show why the conclusion follows, including edge cases and failure modes.'], ['Confidence', 'Rate the conclusion and state what evidence would raise or lower it.']],
+    multimodal: [['Inputs', mission], ['Modality map', 'List the media types involved (text, image, audio, structured data) and how they relate.'], ['Cross-modal synthesis', 'Describe what each modality contributes and where they must agree.'], ['Render plan', 'Specify how the combined output should be presented and verified.'], ['Safety', 'Flag any content that needs human review before generation or publication.']],
+    agentic: [['Goal', mission], ['Tool inventory', 'List the tools available and their permission boundaries.'], ['Plan', 'Trigger → validate → perform bounded work → request approval where needed → record outcome.'], ['Approval gates', 'Mark each step that requires human sign-off before execution.'], ['Audit trail', 'Record every action, input, output, and approval for later review.'], ['Failure path', 'Stop safely, preserve context, report the exact stage, and never silently repeat an external action.']],
+    long_context: [['Source', mission], ['Scope', 'Define the documents, codebase, or dataset to be synthesized and the size boundary.'], ['Extraction', 'Pull out the key facts, entities, dependencies, and decisions.'], ['Synthesis', 'Combine extracted items into a bounded, citation-ready summary.'], ['Traceability', 'Map each conclusion back to its source location.'], ['Review gate', 'State what a human should verify before acting on the summary.']],
   };
   const sections = templates[key] || common.map(({ name, content }) => [name, content]);
   return { type: `${key}_brief`, title: `${info.name} deliverable`, sections: sections.map(([name, content]) => ({ name, content })) };
@@ -98,6 +113,11 @@ function report(role, mission, key, round) {
     lyra: 'Name evidence gaps and test the riskiest assumption before polishing the surface.',
     forge: 'Build one happy path, one failure path, and an observable result with boundary validation.',
     echo: 'Challenge hidden scope, unverifiable claims, provider lock-in, and unsafe automation.',
+    generalist: `Tackle ${mission} across domains, keep the first slice visible, and expand only after review.`,
+    reasoning: `Work ${mission} step by step, state assumptions, and self-correct before concluding.`,
+    multimodal: `Combine the media in ${mission} into one coherent brief and flag anything needing human review.`,
+    agentic: `Plan ${mission} with tool boundaries, approval gates, and an audit trail before any execution.`,
+    long_context: `Synthesize ${mission} from the source material and trace every conclusion back to its origin.`,
   };
   return `${mode} route / round ${round}: ${endings[role]}`;
 }
@@ -111,8 +131,9 @@ async function runTask(body) {
   const roles = [['nova', 'Nova', 'Planning'], ['atlas', 'Atlas', 'Architecture'], ['lyra', 'Lyra', 'Research'], ['forge', 'Forge', 'Build'], ['echo', 'Echo', 'Critique']];
   const reports = [];
   for (let round = 1; round <= rounds; round += 1) for (const [role, name, specialty] of roles) reports.push({ role: { key: role, name, specialty }, round, source: 'MANAGED LOCAL DEMO', text: report(role, mission, key, round) });
-  const decision = key === 'webnovel' ? `Start a serialized fiction package for ${mission}: world bible, cast, arc, and chapter one beat sheet.` : key === 'video' ? `Create a production-ready video brief for ${mission}: shots, camera movement, sound, and delivery format.` : key === 'website' ? `Define a buildable website slice for ${mission} with routes, components, and acceptance criteria.` : `Proceed with a bounded first slice for ${mission}.`;
-  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: 'calibrated' } };
+  const decision = key === 'webnovel' ? `Start a serialized fiction package for ${mission}: world bible, cast, arc, and chapter one beat sheet.` : key === 'video' ? `Create a production-ready video brief for ${mission}: shots, camera movement, sound, and delivery format.` : key === 'website' ? `Define a buildable website slice for ${mission} with routes, components, and acceptance criteria.` : key === 'generalist' ? `Handle ${mission} as a cross-domain jack-of-all-trades task: scan domains, propose a bounded slice, and synthesize a recommendation.` : key === 'reasoning' ? `Work ${mission} step by step with chain-of-thought, self-correction, and a proof sketch.` : key === 'multimodal' ? `Combine the media in ${mission} into one coherent cross-modal brief with a safety review gate.` : key === 'agentic' ? `Plan ${mission} with tool boundaries, approval gates, and an audit trail before any execution.` : key === 'long_context' ? `Synthesize ${mission} from the source material with traceable citations and a review gate.` : `Proceed with a bounded first slice for ${mission}.`;
+  const confidenceLevels = { generalist: 'high', reasoning: 'high', multimodal: 'medium', agentic: 'medium', long_context: 'medium' };
+  return { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: deliverable(mission, key, info), reports, verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'calibrated', calibrated: true } };
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };

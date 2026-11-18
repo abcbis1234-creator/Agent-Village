@@ -117,3 +117,39 @@ test('Rate limiting on /api/run', async (t) => {
   const limitedBody = limited[0].body;
   assert.ok(limitedBody.error && limitedBody.retry_after, 'rate limit response should include error and retry_after');
 });
+
+test('New top-model capabilities route and verdict metadata', async (t) => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const cases = [
+    { mission: 'reason through this logic puzzle step by step', expected: 'reasoning' },
+    { mission: 'combine image and text into a multimodal brief', expected: 'multimodal' },
+    { mission: 'plan an agentic task with tool boundaries', expected: 'agentic' },
+    { mission: 'synthesize this long document into a summary', expected: 'long_context' },
+    { mission: 'handle this cross-domain open-ended task', expected: 'generalist' },
+  ];
+  for (const { mission, expected } of cases) {
+    const res = await request(port, '/api/run', 'POST', { mission, capability: 'auto', rounds: 1 });
+    assert.strictEqual(res.status, 200, `${mission} should return 200`);
+    assert.strictEqual(res.body.capability.key, expected, `${mission} should route to ${expected}, got ${res.body.capability.key}`);
+    assert.ok(res.body.deliverable && res.body.deliverable.sections, `${mission} should have a deliverable`);
+    assert.ok(res.body.verdict && res.body.verdict.decision, `${mission} should have a verdict decision`);
+    assert.ok(res.body.verdict.confidence, `${mission} should have a confidence level`);
+    assert.ok(res.body.verdict.calibrated === true, `${mission} should be calibrated`);
+  }
+
+  const generalist = await request(port, '/api/run', 'POST', { mission: 'write a business plan and analyze the market', capability: 'generalist', rounds: 2 });
+  assert.strictEqual(generalist.status, 200);
+  assert.strictEqual(generalist.body.capability.key, 'generalist');
+  assert.strictEqual(generalist.body.rounds, 2);
+  assert.ok(generalist.body.deliverable.sections.some((s) => s.name === 'Objective'));
+
+  const capabilitiesRes = await request(port, '/api/capabilities');
+  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'generalist'));
+  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'reasoning'));
+  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'multimodal'));
+  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'agentic'));
+  assert.ok(capabilitiesRes.body.capabilities.some((c) => c.key === 'long_context'));
+});
