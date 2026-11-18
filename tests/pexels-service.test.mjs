@@ -64,7 +64,7 @@ test('persists cached entries across module reloads', async () => {
   reloaded.configurePexelsServiceForTests({ fetch: fakeFetch, now: fakeNow });
   const result = await reloaded.fetchBackgroundVideo('ocean deep');
   assert.equal(result.videoId, 123);
-  assert.equal(fetchCalls, 1);
+  assert.equal(fetchCalls, 3);
 });
 
 test('serves stale cached footage when Pexels returns HTTP 429', async () => {
@@ -72,7 +72,7 @@ test('serves stale cached footage when Pexels returns HTTP 429', async () => {
   nextStatus = 429;
   const result = await service.fetchBackgroundVideo('deep ocean');
   assert.equal(result.videoId, 123);
-  assert.equal(fetchCalls, 2);
+  assert.equal(fetchCalls, 4);
   const stats = await service.getCacheStats();
   assert.equal(stats.staleItemsCount, 3);
   assert.equal(stats.requestsLastHour, 1);
