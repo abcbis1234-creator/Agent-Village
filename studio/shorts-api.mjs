@@ -8,6 +8,7 @@ import {
   updateShortsProject
 } from './shorts-studio.mjs';
 import { prepareToon2dProject } from './toon2d-adapter.mjs';
+import { getCacheStats, purgeCache } from './pexels-service.mjs';
 
 function send(res, status, body) {
   const data = Buffer.from(JSON.stringify(body));
@@ -33,6 +34,14 @@ async function readBody(req) {
 export async function handleShortsApi(req, res, url) {
   if (!url.pathname.startsWith('/api/shorts/')) return false;
   try {
+    if (req.method === 'GET' && url.pathname === '/api/shorts/cache') {
+      send(res, 200, await getCacheStats());
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/shorts/cache/purge') {
+      send(res, 200, await purgeCache());
+      return true;
+    }
     if (req.method === 'GET' && url.pathname === '/api/shorts/projects') {
       return send(res, 200, { projects: await listShortsProjects() }), true;
     }
