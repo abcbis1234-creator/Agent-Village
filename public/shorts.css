@@ -46,3 +46,6 @@
 .topbar-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 #cache-pill { white-space: nowrap; letter-spacing: 0; }
 @media (max-width: 560px) { .topbar-actions { gap: 7px; } #cache-pill { font-size: .65rem; padding: 6px 8px; } }
+
+.review-token-field { max-width: 420px; margin-top: 24px; }
+.review-token-field input { letter-spacing: .08em; }
