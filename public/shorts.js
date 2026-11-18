@@ -15,10 +15,15 @@ async function api(path, options = {}) {
 function sceneCard(scene = {}) {
   const card = document.createElement('article');
   card.className = 'repeat-card scene-card';
-  card.innerHTML = '<div class="repeat-card-head"><b>Scene</b><button type="button" class="remove-row" aria-label="Remove scene">Remove</button></div><label>What is narrated<textarea class="scene-narration" rows="2" maxlength="800" required></textarea></label><label>What appears on screen<textarea class="scene-visual" rows="2" maxlength="800" required></textarea></label><label>Duration in seconds<input class="scene-duration" type="number" min="1" max="15" step="1" required></label>';
+  card.innerHTML = '<div class="repeat-card-head"><b>Scene</b><button type="button" class="remove-row" aria-label="Remove scene">Remove</button></div><label>What is narrated<textarea class="scene-narration" rows="2" maxlength="800" required></textarea></label><label>Visual notes<textarea class="scene-visual" rows="2" maxlength="800" required></textarea></label><div class="scene-render-fields"><label>Toon2D set<select class="scene-set"><option value="field">Field / nature</option><option value="street">Street</option><option value="kitchen">Kitchen</option><option value="office">Office</option><option value="shop_counter">Shop counter</option><option value="planet_shop">Planet shop</option><option value="ship_deck">Ship deck</option><option value="desert_rails">Desert railway</option><option value="castle_hall">Castle hall</option><option value="town_top">Town overview</option><option value="prehistoric">Prehistoric valley</option></select></label><label>Lighting mood<select class="scene-mood"><option>day</option><option>interior</option><option>night</option><option>dream</option><option>golden</option><option>sunset</option><option>dawn</option></select></label><label>Character<select class="scene-character"><option>scientist</option><option>worker</option><option>boss</option><option>cop</option><option>cook</option><option>knight</option><option>king</option><option>cashier</option><option>sailor</option><option>caveman</option><option>kid</option><option>alien</option></select></label><label>Pose<select class="scene-pose"><option>stand</option><option>walk</option><option>run</option><option>point</option><option>shrug</option><option>arms_crossed</option><option>hips</option><option>hold</option><option>think</option><option>wave</option><option>cheer</option><option>sit</option></select></label><label>Expression<select class="scene-expression"><option>neutral</option><option>smug</option><option>angry</option><option>shocked</option><option>laughing</option><option>scared</option><option>sad</option><option>sly</option><option>happy</option><option>deadpan</option></select></label><label>Duration in seconds<input class="scene-duration" type="number" min="1" max="15" step="1" required></label></div>';
   $('.scene-narration', card).value = scene.narration || '';
   $('.scene-visual', card).value = scene.visual || '';
   $('.scene-duration', card).value = scene.durationSeconds ?? 5;
+  $('.scene-set', card).value = scene.set || 'field';
+  $('.scene-mood', card).value = scene.mood || 'day';
+  $('.scene-character', card).value = scene.characterType || 'scientist';
+  $('.scene-pose', card).value = scene.pose || 'stand';
+  $('.scene-expression', card).value = scene.expression || 'neutral';
   $('.remove-row', card).addEventListener('click', () => card.remove());
   return card;
 }
@@ -37,7 +42,12 @@ function collectProject() {
   const scenes = $$('.scene-card').map((card) => ({
     narration: $('.scene-narration', card).value.trim(),
     visual: $('.scene-visual', card).value.trim(),
-    durationSeconds: Number($('.scene-duration', card).value)
+    durationSeconds: Number($('.scene-duration', card).value),
+    set: $('.scene-set', card).value,
+    mood: $('.scene-mood', card).value,
+    characterType: $('.scene-character', card).value,
+    pose: $('.scene-pose', card).value,
+    expression: $('.scene-expression', card).value
   }));
   const sources = $$('.source-card').map((card) => ({
     title: $('.source-title', card).value.trim(),
