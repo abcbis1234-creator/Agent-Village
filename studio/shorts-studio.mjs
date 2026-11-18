@@ -27,8 +27,10 @@ export function validateProjectInput(input, partial = false) {
     if (!Number.isInteger(input.targetSeconds) || input.targetSeconds < 30 || input.targetSeconds > 40) throw new Error('targetSeconds must be an integer from 30 to 40');
     result.targetSeconds = input.targetSeconds;
   } else if (!partial) result.targetSeconds = 35;
-  if (Object.hasOwn(input, 'script')) result.script = cleanText(input.script, 'script', 5000);
-  else if (!partial) result.script = '';
+  if (Object.hasOwn(input, 'script')) {
+    if (typeof input.script !== 'string' || input.script.length > 5000) throw new Error('script must be text of at most 5000 characters');
+    result.script = input.script.trim();
+  } else if (!partial) result.script = '';
   if (Object.hasOwn(input, 'sources')) {
     if (!Array.isArray(input.sources) || input.sources.length > 12) throw new Error('sources must be an array of at most 12 items');
     result.sources = input.sources.map((source) => {
