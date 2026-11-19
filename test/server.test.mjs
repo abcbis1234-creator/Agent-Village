@@ -83,6 +83,16 @@ test('Agent Village API, static serving, and security guards', async () => {
   assert.strictEqual(missing.status, 404);
 });
 
+test('Webnovel deliverable composes legendary-grade sections', async () => {
+  const run = await request('/api/run', 'POST', { mission: 'Create a webnovel premise about a hidden village', capability: 'webnovel', rounds: 1 });
+  assert.strictEqual(run.status, 200);
+  assert.strictEqual(run.body.capability.key, 'webnovel');
+  const names = run.body.deliverable.sections.map((s) => s.name);
+  for (const expected of ['Hook', 'World bible', 'Core cast', 'Season arc', 'Chapter one beats', 'Chapter outline', 'Publication rhythm']) {
+    assert.ok(names.includes(expected), `webnovel deliverable should include ${expected}`);
+  }
+});
+
 test('Path traversal variants are rejected', async () => {
   const variants = [
     '/../../etc/passwd',
@@ -543,4 +553,75 @@ test('Missions are recorded and retrievable', async () => {
   assert.strictEqual(list.status, 200);
   assert.ok(Array.isArray(list.body.missions));
   assert.ok(list.body.missions.some((m) => m.mission === 'record this mission please'));
+});
+
+function rawRequest(path, method = 'GET', body = null, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        let parsed = data;
+        if (data) { try { parsed = JSON.parse(data); } catch {} }
+        resolve({ status: res.statusCode, headers: res.headers, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    if (body !== null) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+test('Observability: request id header and metrics snapshot', async () => {
+  const health = await rawRequest('/api/health');
+  assert.strictEqual(health.status, 200);
+  assert.ok(health.headers['x-request-id'], 'responses should carry an X-Request-Id header');
+
+  const supplied = await rawRequest('/api/health', 'GET', null, { 'X-Request-Id': 'req-fixed-123' });
+  assert.strictEqual(supplied.headers['x-request-id'], 'req-fixed-123', 'client-supplied request id should be echoed');
+
+  const metricsRes = await request('/api/metrics');
+  assert.strictEqual(metricsRes.status, 200);
+  assert.ok(metricsRes.body.requests && metricsRes.body.requests.total > 0, 'metrics should count requests');
+  assert.ok(metricsRes.body.llm && typeof metricsRes.body.llm.calls === 'number', 'metrics should expose llm counters');
+  assert.ok(typeof metricsRes.body.uptimeMs === 'number' && metricsRes.body.uptimeMs >= 0, 'metrics should expose uptime');
+  assert.ok(!JSON.stringify(metricsRes.body).includes('apiKey'), 'metrics must not expose secrets');
+});
+
+test('Cancel endpoint reports unknown and missing run ids', async () => {
+  const missing = await request('/api/run/cancel', 'POST', {});
+  assert.strictEqual(missing.status, 400);
+
+  const unknown = await request('/api/run/cancel', 'POST', { requestId: 'does-not-exist' });
+  assert.strictEqual(unknown.status, 404);
+  assert.strictEqual(unknown.body.cancelled, false);
+});
+
+test('LLM usage is accounted in metrics', async () => {
+  const before = (await request('/api/metrics')).body.llm.totalTokens;
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const content = JSON.stringify({ decision: 'ok', rationale: 'r', dissent: '', next_actions: [], confidence: 'low', deliverable: { title: 'D', sections: [] }, reports: [] });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const original = { configured: llmConfig.configured, baseUrl: llmConfig.baseUrl, model: llmConfig.model };
+  llmConfig.configured = true;
+  llmConfig.baseUrl = `http://127.0.0.1:${mock.address().port}`;
+  llmConfig.model = 'usage-model';
+  try {
+    const res = await request('/api/run', 'POST', { mission: 'plan a launch', capability: 'planning', rounds: 1 });
+    assert.strictEqual(res.status, 200);
+    const after = (await request('/api/metrics')).body.llm.totalTokens;
+    assert.strictEqual(after - before, 18, 'token usage should be added to the metrics total');
+  } finally {
+    llmConfig.configured = original.configured;
+    llmConfig.baseUrl = original.baseUrl;
+    llmConfig.model = original.model;
+    await new Promise((resolve) => mock.close(resolve));
+  }
 });

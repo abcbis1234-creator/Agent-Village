@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
+import crypto from 'node:crypto';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { performance } from 'node:perf_hooks';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'public');
@@ -76,7 +78,13 @@ const SECURITY_HEADERS = {
 
 const RUN_RATE_LIMIT = { windowMs: 60 * 1000, max: 30 };
 const runRateState = new Map();
-function logRequest(req, status) { console.log(`${new Date().toISOString()} ${req.method} ${req.url} -> ${status}`); }
+function logRequest(req, status, meta = {}) {
+  const id = req.__requestId || 'unknown';
+  const route = req.__route || req.url;
+  const durationMs = meta.durationMs;
+  logEvent('info', `${req.method} ${route} -> ${status}`, { requestId: id, method: req.method, route, status, durationMs, ip: req.socket.remoteAddress });
+  recordMetric(route, status, { capability: meta.capability, durationMs });
+}
 function rateLimitRun(ip) {
   const now = Date.now();
   const entry = runRateState.get(ip) || { count: 0, reset: now + RUN_RATE_LIMIT.windowMs };
@@ -121,6 +129,58 @@ if (db) {
   } catch { /* ignore */ }
 }
 
+// Observability: structured JSON logs, request IDs, and a metrics endpoint.
+const metrics = {
+  startedAt: new Date().toISOString(),
+  requests: { total: 0, ok: 0, errors: 0, rateLimited: 0 },
+  byRoute: new Map(),
+  byCapability: new Map(),
+  llm: { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, errors: 0, latencyMsSum: 0 },
+  tools: new Map(),
+  media: { generated: 0, approved: 0, rejected: 0 },
+  approval: { requested: 0, granted: 0, declined: 0 },
+};
+function increment(map, key, by = 1) { const v = (map.get(key) || 0) + by; map.set(key, v); return v; }
+function logEvent(level, message, meta = {}) {
+  const entry = { ts: new Date().toISOString(), level, message, ...meta };
+  console.log(JSON.stringify(entry));
+}
+function getRequestId(req) {
+  const existing = req.headers['x-request-id'];
+  if (typeof existing === 'string' && existing.trim().length > 0 && existing.trim().length <= 128) return existing.trim();
+  return crypto.randomUUID();
+}
+function recordMetric(route, status, meta = {}) {
+  metrics.requests.total += 1;
+  if (status >= 500) metrics.requests.errors += 1;
+  else if (status === 429) metrics.requests.rateLimited += 1;
+  else metrics.requests.ok += 1;
+  increment(metrics.byRoute, route);
+  if (meta.capability) increment(metrics.byCapability, meta.capability);
+}
+function recordLLMMetric({ model, promptTokens, completionTokens, totalTokens, latencyMs, error }) {
+  metrics.llm.calls += 1;
+  if (error) metrics.llm.errors += 1;
+  if (promptTokens != null) metrics.llm.promptTokens += promptTokens;
+  if (completionTokens != null) metrics.llm.completionTokens += completionTokens;
+  if (totalTokens != null) metrics.llm.totalTokens += totalTokens;
+  if (latencyMs != null) metrics.llm.latencyMsSum += latencyMs;
+}
+function recordToolMetric(name, outcome) { increment(metrics.tools, `${name}:${outcome}`); }
+function snapshotMetrics() {
+  return {
+    uptimeMs: Math.round(performance.now() - (metrics._startMs || 0)),
+    requests: { ...metrics.requests },
+    byRoute: Object.fromEntries(metrics.byRoute),
+    byCapability: Object.fromEntries(metrics.byCapability),
+    llm: { ...metrics.llm, avgLatencyMs: metrics.llm.calls ? Math.round(metrics.llm.latencyMsSum / metrics.llm.calls) : 0 },
+    tools: Object.fromEntries(metrics.tools),
+    media: { ...metrics.media },
+    approval: { ...metrics.approval },
+  };
+}
+metrics._startMs = performance.now();
+
 async function ensureMediaDir() { try { await mkdir(mediaDir, { recursive: true }); } catch { /* ignore */ } }
 
 async function generateImageStableDiffusion(prompt, options = {}) {
@@ -152,6 +212,7 @@ async function generateImageStableDiffusion(prompt, options = {}) {
   await ensureMediaDir();
   const filename = `image-${Date.now()}.png`;
   await writeFile(join(mediaDir, filename), Buffer.from(b64, 'base64'));
+  metrics.media.generated += 1;
   audit('image', `generated ${filename} from prompt: ${prompt.slice(0, 80)}`);
   return { provider: 'stable-diffusion', kind: 'image', prompt, status: 'generated', url: `/media/${filename}`, filename };
 }
@@ -298,6 +359,11 @@ async function callLLM(messages, options = {}) {
   if (!llmConfig.configured) throw new Error('LLM not configured (set LLM_BASE_URL)');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || llmConfig.timeoutMs);
+  if (options.signal) {
+    if (options.signal.aborted) throw new Error('request cancelled');
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  const start = performance.now();
   try {
     const payload = {
       model: options.model || llmConfig.model,
@@ -315,9 +381,18 @@ async function callLLM(messages, options = {}) {
     const data = await response.json();
     const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     if (!content) throw new Error('LLM returned no content');
+    const usage = data.usage || {};
+    recordLLMMetric({
+      model: payload.model,
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+      latencyMs: Math.round(performance.now() - start),
+    });
     return content;
   } catch (error) {
-    if (error.name === 'AbortError') throw new Error('LLM request timed out');
+    recordLLMMetric({ model: options.model || llmConfig.model, latencyMs: Math.round(performance.now() - start), error: true });
+    if (error.name === 'AbortError') throw new Error('request cancelled');
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -419,7 +494,7 @@ function buildFinalAnswer(parsed, { mission, rounds, key, info, roles, matchedKn
   return { id: `mission-${Date.now()}`, mission, rounds, source: `LLM · ${llmConfig.model}`, capability: info, deliverable: deliverableOut, reports, knowledge: matchedKnowledge.map((k) => k.title), toolTrace, verdict };
 }
 
-async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools = [], onStatus }) {
+async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools = [], onStatus, signal }) {
   const knowledgeBlock = matchedKnowledge.length ? matchedKnowledge.map((k) => `- [${k.title}] ${k.content}`).join('\n') : '(none)';
   const toolList = TOOLS.map((t) => `- ${t.name}(${t.parameters}) [${t.consequence}]: ${t.description}`).join('\n');
   const system = [
@@ -450,7 +525,8 @@ async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowle
   if (onStatus) onStatus('model', `Using ${model} for the ${info.name} route`);
 
   for (let step = 0; step < 5; step += 1) {
-    const raw = await callLLM(messages, { json: true, model });
+    if (signal && signal.aborted) throw new Error('request cancelled');
+    const raw = await callLLM(messages, { json: true, model, signal });
     let parsed;
     try { parsed = JSON.parse(raw); } catch { throw new Error('LLM returned invalid JSON'); }
 
@@ -480,6 +556,7 @@ async function runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowle
     let result;
     if (onStatus) onStatus('tool', toolDef.name);
     try { result = await toolDef.handler(args); } catch (error) { result = { error: error.message }; }
+    recordToolMetric(toolDef.name, result && result.error ? 'error' : 'ok');
     audit('tool', `${toolDef.name} ${argsKey.slice(0, 80)}`);
     toolTrace.push({ tool: toolDef.name, args, result: JSON.stringify(result).slice(0, 1000) });
     messages.push({ role: 'assistant', content: raw });
@@ -572,7 +649,7 @@ function routeMission(mission, requested = 'auto') {
 function deliverable(mission, key, info) {
   const common = [{ name: 'Goal', content: mission }, { name: 'First deliverable', content: 'A bounded first slice with a visible result and a review gate.' }, { name: 'Risks', content: 'List the highest-risk assumption and the cheapest way to test it.' }];
   const templates = {
-    webnovel: [['Premise', `A serialized story built around: ${mission}`], ['World bible', 'Define the rules of the world, the pressure created by them, and one mystery that can sustain a season.'], ['Core cast', 'Protagonist with a concrete want; rival with a defensible worldview; ally with a cost; antagonist with a system-level advantage.'], ['Season arc', 'Inciting disruption → first irreversible choice → midpoint revelation → public consequence → earned cliffhanger.'], ['Chapter one beats', 'Cold open, ordinary problem, strange signal, first choice, consequence, closing question.']],
+    webnovel: [['Hook', `High-concept hook and logline for: ${mission}`], ['World bible', 'Define the rules of the world, the pressure created by them, factions and systems, and one mystery that can sustain a season.'], ['Core cast', 'Protagonist with a concrete want; rival with a defensible worldview; ally with a cost; antagonist with a system-level advantage.'], ['Season arc', 'Inciting disruption → first irreversible choice → midpoint revelation → public consequence → earned cliffhanger.'], ['Chapter one beats', 'Cold open, ordinary problem, strange signal, first choice, consequence, closing question.'], ['Chapter outline', 'Beat sheet for chapters 2..N: escalation per chapter, new information, hard choice, and cliffhanger beat.'], ['Publication rhythm', 'Chapter cadence, arc pacing, and post-chapter hook rhythm for binge and weekly-reader retention.']],
     video: [['Concept', mission], ['Format', 'Choose platform, aspect ratio, approximate duration, audience, and whether generated audio is required.'], ['Shot 1', 'Opening frame, visible subject action, camera movement, sound, and the information delivered in the first two seconds.'], ['Shot 2', 'Escalation or demonstration with a clear visual result and a controlled transition.'], ['Ending', 'Resolve the central promise, hold the final framing, and specify title, caption, or call to action.'], ['Generation handoff', 'Ready for a server-side video provider; no browser-side keys or hidden model claims.']],
     image: [['Subject', mission], ['Composition', 'Specify framing, focal point, perspective, negative space, and intended crop.'], ['Style and light', 'Specify materials, palette, atmosphere, lighting direction, and visual references.'], ['Variants', 'Prepare three purposeful variations: hero, close detail, and alternate composition.']],
     audio: [['Purpose', mission], ['Script', 'Write exact spoken words separately from delivery style, pronunciation, language, and accent.'], ['Sound', 'Specify music, ambience, action effects, space, timing, and what must remain intelligible.'], ['Mix notes', 'Keep dialogue clear, preserve action cues, and verify rendered duration and tail.']],
@@ -606,12 +683,13 @@ function report(role, key, round) {
   return `${mode} route / round ${round}: ${endings[role]}`;
 }
 
-async function runTask(body, onStatus) {
+async function runTask(body, onStatus, signal) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('invalid request body');
   const mission = cleanMission(body.mission);
   const rounds = Math.max(1, Math.min(3, Number.isInteger(body.rounds) ? body.rounds : 2));
   const key = routeMission(mission, body.capability);
   const info = capabilities.find((item) => item.key === key) || capabilities[4];
+  increment(metrics.byCapability, key);
   const roles = [['nova', 'Nova', 'Planning'], ['atlas', 'Atlas', 'Architecture'], ['lyra', 'Lyra', 'Research'], ['forge', 'Forge', 'Build'], ['echo', 'Echo', 'Critique']];
   let matchedKnowledge = [];
   if (knowledgeStore.length) {
@@ -623,18 +701,19 @@ async function runTask(body, onStatus) {
   }
   if (llmConfig.configured) {
     try {
-      const out = await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools: Array.isArray(body.approvedTools) ? body.approvedTools : [], onStatus });
+      const out = await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools: Array.isArray(body.approvedTools) ? body.approvedTools : [], onStatus, signal });
       recordMission(out);
       return out;
     } catch (error) {
       if (error instanceof ApprovalRequired) throw error;
+      if (error && error.message === 'request cancelled') throw error;
       audit('llm', `fallback to demo: ${error.message}`);
     }
   }
   const reports = [];
   for (let round = 1; round <= rounds; round += 1) for (const [role, name, specialty] of roles) reports.push({ role: { key: role, name, specialty }, round, source: 'MANAGED LOCAL DEMO', text: report(role, key, round) });
   const decisionTemplates = {
-    webnovel: `Start a serialized fiction package for "${mission}": world bible, cast, arc, and chapter one beat sheet.`,
+    webnovel: `Start a serialized fiction package for "${mission}": hook, world bible, cast, season arc, chapter-by-chapter outline, and publication rhythm.`,
     video: `Create a production-ready video brief for "${mission}": shots, camera movement, sound, and delivery format.`,
     website: `Define a buildable website slice for "${mission}" with routes, components, and acceptance criteria.`,
     generalist: `Handle "${mission}" as a cross-domain jack-of-all-trades task: scan domains, propose a bounded slice, and synthesize a recommendation.`,
@@ -660,6 +739,7 @@ function staticFile(pathname, res) { return serveFrom(publicDir, pathname, res);
 
 async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
+  req.__route = url.pathname;
   const ip = req.socket.remoteAddress || 'unknown';
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
@@ -713,6 +793,11 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && url.pathname === '/manus-routes.json') { logRequest(req, 200); return staticFile('/manus-routes.json', res); }
   if (req.method === 'POST' && url.pathname === '/api/run') {
     if (!rateLimitRun(ip)) { logRequest(req, 429); return send(res, 429, { error: 'rate limit exceeded', retry_after: Math.ceil(RUN_RATE_LIMIT.windowMs / 1000) }); }
+    const controller = new AbortController();
+    const requestId = req.__requestId;
+    activeRuns.set(requestId, controller);
+    const cleanup = () => { activeRuns.delete(requestId); };
+    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
     try {
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
@@ -721,13 +806,15 @@ async function handleRequest(req, res) {
         res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
         const emit = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ } };
         try {
-          const result = await runTask(body, (phase, message) => emit('status', { phase, message }));
+          const result = await runTask(body, (phase, message) => emit('status', { phase, message }), controller.signal);
           emit('result', result);
         } catch (error) {
           if (error instanceof ApprovalRequired) {
             const id = `tool-${Date.now()}`;
             toolApprovalState.set(id, { approved: false, tool: error.approval.tool, args: error.approval.args, at: new Date().toISOString() });
             emit('approval', { id, tool: error.approval.tool, args: error.approval.args });
+          } else if (error && error.message === 'request cancelled') {
+            emit('cancelled', { requestId });
           } else {
             emit('error', { message: error.message || 'request failed' });
           }
@@ -736,7 +823,9 @@ async function handleRequest(req, res) {
         logRequest(req, 200);
         return;
       }
-      return send(res, 200, await runTask(body));
+      const result = await runTask(body, null, controller.signal);
+      logRequest(req, 200, { capability: result.capability && result.capability.key });
+      return send(res, 200, result);
     } catch (error) {
       if (error instanceof ApprovalRequired) {
         const id = `tool-${Date.now()}`;
@@ -744,9 +833,31 @@ async function handleRequest(req, res) {
         logRequest(req, 202);
         return send(res, 202, { error: 'tool approval required', id, tool: error.approval.tool, args: error.approval.args, note: 'Call POST /api/tools/approve with this id, then re-run /api/run with approvedTools: [id].' });
       }
+      if (error && error.message === 'request cancelled') {
+        logRequest(req, 499);
+        return send(res, 499, { error: 'request cancelled', requestId });
+      }
       logRequest(req, 400);
       return send(res, 400, { error: error.message || 'request failed' });
+    } finally {
+      cleanup();
     }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/run/cancel') {
+    try {
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
+      const body = JSON.parse(raw || '{}');
+      const requestId = body.requestId || body.id;
+      if (!requestId) throw new Error('requestId is required');
+      const cancelled = cancelRun(requestId);
+      logRequest(req, cancelled ? 200 : 404);
+      return send(res, cancelled ? 200 : 404, { cancelled, requestId });
+    } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/metrics') {
+    logRequest(req, 200);
+    return send(res, 200, { source: 'MANAGED LOCAL DEMO', ...snapshotMetrics(), activeRuns: activeRuns.size });
   }
   if (req.method === 'POST' && url.pathname === '/api/tools/approve') {
     try {
@@ -756,6 +867,7 @@ async function handleRequest(req, res) {
       const entry = toolApprovalState.get(body.id);
       if (!entry) throw new Error('unknown tool approval id');
       entry.approved = true;
+      metrics.approval.granted += 1;
       logRequest(req, 200);
       return send(res, 200, { approved: true, id: body.id, tool: entry.tool, args: entry.args });
     } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
@@ -775,6 +887,7 @@ async function handleRequest(req, res) {
         const id = `media-${Date.now()}`;
         mediaApprovalState.set(id, { approved: false, mission: body.mission || '', kind, prompt, at: new Date().toISOString() });
         if (mediaApprovalState.size > 100) { const oldest = mediaApprovalState.keys().next().value; mediaApprovalState.delete(oldest); }
+        metrics.approval.requested += 1;
         logRequest(req, 202);
         return send(res, 202, { error: 'approval required', id, kind, prompt, note: 'Call POST /api/media/approve with this id to authorize generation.' });
       }
@@ -782,6 +895,7 @@ async function handleRequest(req, res) {
       if (!entry || !entry.approved || entry.kind !== kind || entry.prompt !== prompt) throw new Error('no valid approval for this generation');
       const result = await generateMedia(kind, prompt, body.options || {});
       entry.approved = false; // one-time use
+      metrics.media.approved += 1;
       logRequest(req, 200);
       return send(res, 200, result);
     } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
@@ -794,6 +908,7 @@ async function handleRequest(req, res) {
       const entry = mediaApprovalState.get(body.id);
       if (!entry) throw new Error('unknown approval id');
       entry.approved = true;
+      metrics.approval.granted += 1;
       logRequest(req, 200);
       return send(res, 200, { approved: true, id: body.id, kind: entry.kind, prompt: entry.prompt });
     } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
@@ -804,7 +919,25 @@ async function handleRequest(req, res) {
   return send(res, 404, { error: 'not_found' });
 }
 
-const server = createServer(handleRequest);
+const server = createServer(async (req, res) => {
+  req.__requestId = getRequestId(req);
+  res.setHeader('X-Request-Id', req.__requestId);
+  try {
+    await handleRequest(req, res);
+  } catch (error) {
+    logEvent('error', 'unhandled request error', { requestId: req.__requestId, error: error.message });
+    if (!res.writableEnded) send(res, 500, { error: 'internal server error', requestId: req.__requestId });
+  }
+});
+
+// Cancel / abort mid-run: tracks in-flight streaming runs by request id.
+const activeRuns = new Map(); // requestId -> AbortController
+function cancelRun(requestId) {
+  const controller = activeRuns.get(requestId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
 
 let shuttingDown = false;
 function shutdown(signal) {
@@ -822,4 +955,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, initStore, saveFeedback, saveKnowledge, recordMission, db, callLLM, runTaskWithLLM, matchKnowledge, matchKnowledgeSemantic, embedText, cosine, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, initStore, saveFeedback, saveKnowledge, recordMission, db, callLLM, runTaskWithLLM, matchKnowledge, matchKnowledgeSemantic, embedText, cosine, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression, metrics, snapshotMetrics, getRequestId, activeRuns, cancelRun, logEvent };

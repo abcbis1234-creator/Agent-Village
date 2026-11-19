@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check test/server.test.mjs && node --check eval/run.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check test/server.test.mjs && node --check eval/run.mjs && node --check eval/adversarial.mjs",
     "test": "node --test",
-    "eval": "node eval/run.mjs"
+    "eval": "node eval/run.mjs",
+    "eval:security": "node eval/adversarial.mjs",
+    "verify": "npm run check && npm test && npm run eval && npm run eval:security"
   },
   "repository": {
     "type": "git",

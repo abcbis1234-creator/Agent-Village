@@ -19,6 +19,9 @@ media/*
 data/*
 !data/.gitkeep
 
+# Generated webnovel artifacts
+webnovels/
+
 # OS
 .DS_Store
 Thumbs.db

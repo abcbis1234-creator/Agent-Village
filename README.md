@@ -30,6 +30,12 @@ npm start
 # evaluation harness against golden missions
 npm run eval
 
+# adversarial prompt-injection suite
+npm run eval:security
+
+# everything (check + test + both evals)
+npm run verify
+
 # run with a custom port
 PORT=8080 npm start
 ```
@@ -74,6 +80,41 @@ Approval-gated media generation. Body:
 - `id` (approval id, required when `approved: true`)
 
 Without `approved`, returns `202` with an approval id. Approve it via `POST /api/media/approve` with `{ id }`, then re-post with `approved: true` and the same `id`.
+
+## Observability, cancellation, and cost
+
+### `GET /api/metrics`
+
+Observability snapshot. Contains no secrets.
+
+```json
+{
+  "uptimeMs": 1472,
+  "requests": { "total": 2, "ok": 2, "errors": 0, "rateLimited": 0 },
+  "byRoute": { "/api/health": 1, "/api/metrics": 1 },
+  "byCapability": {},
+  "llm": { "calls": 0, "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "errors": 0, "avgLatencyMs": 0 },
+  "tools": {}, "media": {}, "approval": {}, "activeRuns": 0
+}
+```
+
+- **Request IDs** — every response carries `X-Request-Id`. A client-supplied `X-Request-Id` is honored and echoed back.
+- **Structured logs** — the server emits one JSON object per line: `{ ts, level, message, requestId, method, route, status, ip }`.
+- **Token accounting** — when an LLM is configured, `usage` from each completion is accumulated under `llm` (prompt / completion / total tokens, call count, errors, average latency). This is how you track cost per model.
+- **Tool, media, and approval counters** — outcome counts for every allow-listed tool, generated images, and approval requests/grants.
+
+### `POST /api/run/cancel`
+
+Cancels an in-flight run:
+
+```bash
+curl -s -X POST http://localhost:3000/api/run/cancel \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"<X-Request-Id of the run>"}'
+# -> { "cancelled": true, "requestId": "..." }  (404 if it already finished)
+```
+
+Streaming clients do not need this: disconnecting the response aborts the model call automatically (`res` close triggers an abort, and the run emits a `cancelled` event).
 
 ## Stable Diffusion (image generation)
 
@@ -274,12 +315,10 @@ No single feature creates a breakthrough. These are the highest-leverage next st
 | Upgrade | Why it matters | Effort | Risk |
 |---|---|---|---|
 | **Auth + multi-user** | Token auth for write endpoints; per-user history | M | Medium |
-| **Observability** | Structured JSON logs, request IDs, `/metrics` | S | Low |
-| **Adversarial eval suite** | Golden set of prompt-injection cases alongside routing evals | S | Low |
-| **Cancel / abort mid-run** | Client disconnect cancels the model call | S | Low |
-| **Cost & token accounting** | Track tokens/usage per mission | S | Low |
+| **Durable workspaces** | Versioned artifacts and resumable runs that survive restarts | M | Medium |
+| **Provider health probes** | Active liveness checks instead of static config flags | S | Low |
 
-Already in place: streaming (SSE), semantic embeddings, SQLite persistence, per-capability model routing, tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), missions log (`GET /api/missions`), provider presets, approval-gated media, and feedback/knowledge memory.
+Already in place: observability (request IDs, structured JSON logs, `GET /api/metrics`), cancel/abort mid-run (`POST /api/run/cancel` plus client-disconnect abort), cost & token accounting, adversarial eval suite (`npm run eval:security`), streaming (SSE), semantic embeddings, SQLite persistence, per-capability model routing, tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), missions log (`GET /api/missions`), provider presets, approval-gated media, and feedback/knowledge memory.
 
 ## Security
 

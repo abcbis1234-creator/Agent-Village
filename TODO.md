@@ -15,3 +15,9 @@
 - Add durable workspaces and versioned artifacts.
 - Add provider health/status and user-controlled approval policies.
 - Publish each accepted upgrade as a checkpoint; do not silently enable unattended automation.
+
+## Done (recent checkpoints)
+- Observability: request IDs (`X-Request-Id`), structured JSON request logs, `GET /api/metrics` (requests, routes, capabilities, tokens, tools, media, approvals, uptime).
+- Cancel / abort mid-run: `POST /api/run/cancel` plus automatic abort when a streaming client disconnects.
+- Cost & token accounting: per-completion `usage` accumulated into `/api/metrics`.
+- Adversarial eval suite: `eval/adversarial.json` + `npm run eval:security` (7 prompt-injection cases).

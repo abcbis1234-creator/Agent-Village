@@ -25,9 +25,12 @@ This file guides AI systems (and humans) who want to contribute to Agent Village
 
 ## Testing
 
-- `npm run check` — syntax-checks `server.mjs` and `public/app.js`.
+- `npm run check` — syntax-checks `server.mjs`, `public/app.js`, `test/server.test.mjs`, and both eval runners.
 - `npm test` — runs the Node built-in test suite under `test/`.
-- Add tests for any new route or behavior change.
+- `npm run eval` — golden routing suite (`eval/golden.json`).
+- `npm run eval:security` — adversarial prompt-injection suite (`eval/adversarial.json`); verifies untrusted mission text never becomes instructions, leaks server secrets, or escapes deliverable bounds.
+- `npm run verify` — check + test + both evals. Run this before opening a PR.
+- Add tests for any new route or behavior change. New observability/cancel/accounting surface is covered in `test/server.test.mjs`.
 
 ## Commit message style
 
