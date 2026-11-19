@@ -314,11 +314,9 @@ No single feature creates a breakthrough. These are the highest-leverage next st
 
 | Upgrade | Why it matters | Effort | Risk |
 |---|---|---|---|
-| **Auth + multi-user** | Token auth for write endpoints; per-user history | M | Medium |
 | **Durable workspaces** | Versioned artifacts and resumable runs that survive restarts | M | Medium |
-| **Provider health probes** | Active liveness checks instead of static config flags | S | Low |
 
-Already in place: observability (request IDs, structured JSON logs, `GET /api/metrics`), cancel/abort mid-run (`POST /api/run/cancel` plus client-disconnect abort), cost & token accounting, adversarial eval suite (`npm run eval:security`), streaming (SSE), semantic embeddings, SQLite persistence, per-capability model routing, tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), missions log (`GET /api/missions`), provider presets, approval-gated media, and feedback/knowledge memory.
+Already in place: observability (request IDs, structured JSON logs, `GET /api/metrics`), cancel/abort mid-run (`POST /api/run/cancel` plus client-disconnect abort), cost & token accounting, adversarial eval suite (`npm run eval:security`), optional token auth for write endpoints (`VILLAGE_API_TOKEN`), per-user scoping (`X-Village-User`), active provider health probes (`GET /api/providers/health`), streaming (SSE), semantic embeddings, SQLite persistence, per-capability model routing, tool use (allow-listed, approval-gated, audited), evaluation harness (`npm run eval`), injection-delimited prompts, audit trail (`GET /api/audit`), missions log (`GET /api/missions`), provider presets, approval-gated media, and feedback/knowledge memory.
 
 ## Security
 

@@ -625,3 +625,18 @@ test('LLM usage is accounted in metrics', async () => {
     await new Promise((resolve) => mock.close(resolve));
   }
 });
+
+test('Auth disabled by default; status and provider health endpoints work', async () => {
+  const status = await request('/api/auth/status');
+  assert.strictEqual(status.status, 200);
+  assert.strictEqual(status.body.authRequired, false);
+
+  const health = await request('/api/providers/health');
+  assert.strictEqual(health.status, 200);
+  assert.ok(Array.isArray(health.body.providers));
+  assert.ok(health.body.providers.some((p) => p.kind === 'llm'));
+
+  const run = await request('/api/run', 'POST', { mission: 'auth smoke test', capability: 'auto', rounds: 1 });
+  assert.strictEqual(run.status, 200);
+  assert.strictEqual(run.body.user, 'anonymous');
+});

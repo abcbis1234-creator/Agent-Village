@@ -28,21 +28,30 @@ async function initStore() {
       CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, mission TEXT, capability TEXT, rounds INTEGER, source TEXT, created_at TEXT, result_json TEXT);
       CREATE TABLE IF NOT EXISTS embeddings (id TEXT PRIMARY KEY, model TEXT, vector TEXT);
     `);
-    feedbackStore = db.prepare('SELECT * FROM feedback').all().map((r) => ({ id: r.id, mission: r.mission, expectedCapability: r.expected_capability, note: r.note, at: r.created_at }));
-    knowledgeStore = db.prepare('SELECT * FROM knowledge').all().map((r) => ({ id: r.id, title: r.title, content: r.content, at: r.created_at }));
+    ensureColumn('feedback', 'user_id', 'TEXT');
+    ensureColumn('knowledge', 'user_id', 'TEXT');
+    ensureColumn('missions', 'user_id', 'TEXT');
+    feedbackStore = db.prepare('SELECT * FROM feedback').all().map((r) => ({ id: r.id, mission: r.mission, expectedCapability: r.expected_capability, note: r.note, at: r.created_at, user: r.user_id || 'anonymous' }));
+    knowledgeStore = db.prepare('SELECT * FROM knowledge').all().map((r) => ({ id: r.id, title: r.title, content: r.content, at: r.created_at, user: r.user_id || 'anonymous' }));
     return;
   } catch { db = null; }
   try { feedbackStore = JSON.parse(await readFile(join(dataDir, 'feedback.json'), 'utf8')); } catch { feedbackStore = []; }
   try { knowledgeStore = JSON.parse(await readFile(join(dataDir, 'knowledge.json'), 'utf8')); } catch { knowledgeStore = []; }
   if (!Array.isArray(feedbackStore)) feedbackStore = [];
   if (!Array.isArray(knowledgeStore)) knowledgeStore = [];
+  feedbackStore = feedbackStore.map((e) => ({ ...e, user: e.user || 'anonymous' }));
+  knowledgeStore = knowledgeStore.map((e) => ({ ...e, user: e.user || 'anonymous' }));
+}
+function ensureColumn(table, column, type) {
+  if (!db) return;
+  try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`); } catch { /* already exists */ }
 }
 function persistFeedback() {
   if (db) {
     try {
       db.exec('DELETE FROM feedback');
-      const stmt = db.prepare('INSERT INTO feedback (id, mission, expected_capability, note, created_at) VALUES (?,?,?,?,?)');
-      for (const e of feedbackStore) stmt.run(e.id, e.mission, e.expectedCapability, e.note || '', e.at || new Date().toISOString());
+      const stmt = db.prepare('INSERT INTO feedback (id, mission, expected_capability, note, created_at, user_id) VALUES (?,?,?,?,?,?)');
+      for (const e of feedbackStore) stmt.run(e.id, e.mission, e.expectedCapability, e.note || '', e.at || new Date().toISOString(), e.user || 'anonymous');
       return;
     } catch { /* fall through */ }
   }
@@ -52,8 +61,8 @@ function persistKnowledge() {
   if (db) {
     try {
       db.exec('DELETE FROM knowledge');
-      const stmt = db.prepare('INSERT INTO knowledge (id, title, content, created_at) VALUES (?,?,?,?)');
-      for (const e of knowledgeStore) stmt.run(e.id, e.title, e.content, e.at || new Date().toISOString());
+      const stmt = db.prepare('INSERT INTO knowledge (id, title, content, created_at, user_id) VALUES (?,?,?,?,?)');
+      for (const e of knowledgeStore) stmt.run(e.id, e.title, e.content, e.at || new Date().toISOString(), e.user || 'anonymous');
       return;
     } catch { /* fall through */ }
   }
@@ -64,8 +73,8 @@ async function saveKnowledge() { persistKnowledge(); }
 function recordMission(result) {
   if (!db || !result || !result.id) return;
   try {
-    db.prepare('INSERT OR REPLACE INTO missions (id, mission, capability, rounds, source, created_at, result_json) VALUES (?,?,?,?,?,?,?)')
-      .run(result.id, result.mission, (result.capability && result.capability.key) || null, result.rounds || 0, result.source || '', new Date().toISOString(), JSON.stringify(result).slice(0, 100000));
+    db.prepare('INSERT OR REPLACE INTO missions (id, mission, capability, rounds, source, created_at, result_json, user_id) VALUES (?,?,?,?,?,?,?,?)')
+      .run(result.id, result.mission, (result.capability && result.capability.key) || null, result.rounds || 0, result.source || '', new Date().toISOString(), JSON.stringify(result).slice(0, 100000), result.user || 'anonymous');
   } catch { /* ignore */ }
 }
 
@@ -181,6 +190,67 @@ function snapshotMetrics() {
 }
 metrics._startMs = performance.now();
 
+// Optional API token auth (VILLAGE_API_TOKEN). When unset, auth is disabled
+// and the local demo mode stays open. When set, write endpoints require
+// `Authorization: Bearer <token>` (or `X-API-Token`).
+const apiToken = process.env.VILLAGE_API_TOKEN || '';
+const authRequired = Boolean(apiToken);
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+function isWriteRoute(method, pathname) {
+  if (!WRITE_METHODS.has(method)) return false;
+  if (!pathname.startsWith('/api/')) return false;
+  const readOnly = ['/api/health', '/api/metrics', '/api/capabilities', '/api/providers', '/api/providers/health', '/api/llm/presets', '/api/tools', '/api/agent-contract', '/api/audit', '/api/missions', '/api/feedback', '/api/knowledge'];
+  if (readOnly.some((r) => pathname === r)) return false;
+  return true;
+}
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+function checkAuth(req) {
+  if (!authRequired) return true;
+  const header = String(req.headers.authorization || '');
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const alt = String(req.headers['x-api-token'] || '').trim();
+  return safeEqual(bearer, apiToken) || safeEqual(alt, apiToken);
+}
+function getUser(req) {
+  const raw = String(req.headers['x-village-user'] || '').trim().toLowerCase();
+  const clean = raw.replace(/[^a-z0-9._-]/g, '').slice(0, 64);
+  return clean || 'anonymous';
+}
+function probeTargets(kind) {
+  if (kind === 'llm') {
+    const base = llmConfig.baseUrl || '';
+    return { url: `${base.replace(/\/$/, '')}/models`, headers: { 'Content-Type': 'application/json', ...(llmConfig.apiKey ? { Authorization: `Bearer ${llmConfig.apiKey}` } : {}) } };
+  }
+  const cfg = providerConfig[kind];
+  if (!cfg || !cfg.baseUrl) return null;
+  const base = cfg.baseUrl;
+  return { url: `${base.replace(/\/$/, '')}/sdapi/v1/options`, headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) } };
+}
+async function probeProvider(kind) {
+  const cfg = kind === 'llm' ? { provider: llmConfig.model, configured: llmConfig.configured, kind } : providerConfig[kind];
+  if (!cfg || !cfg.configured) return { kind, provider: cfg ? cfg.provider : null, configured: false, reachable: false };
+  const target = probeTargets(kind);
+  if (!target) return { kind, provider: cfg.provider, configured: false, reachable: false };
+  const start = performance.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch(target.url, { method: 'GET', headers: target.headers, signal: controller.signal });
+    return { kind, provider: cfg.provider, configured: true, reachable: response.ok, status: response.status, latencyMs: Math.round(performance.now() - start) };
+  } catch (error) {
+    return { kind, provider: cfg.provider, configured: true, reachable: false, latencyMs: Math.round(performance.now() - start), error: error.message };
+  } finally { clearTimeout(timer); }
+}
+async function asyncProviderHealth() {
+  const results = await Promise.allSettled([probeProvider('llm'), probeProvider('image'), probeProvider('video')]);
+  const providers = results.map((r) => r.status === 'fulfilled' ? r.value : { kind: 'unknown', configured: false, reachable: false, error: 'probe failed' });
+  return { source: 'MANAGED LOCAL DEMO', generatedAt: new Date().toISOString(), providers };
+}
 async function ensureMediaDir() { try { await mkdir(mediaDir, { recursive: true }); } catch { /* ignore */ } }
 
 async function generateImageStableDiffusion(prompt, options = {}) {
@@ -683,7 +753,7 @@ function report(role, key, round) {
   return `${mode} route / round ${round}: ${endings[role]}`;
 }
 
-async function runTask(body, onStatus, signal) {
+async function runTask(body, onStatus, signal, user = 'anonymous') {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('invalid request body');
   const mission = cleanMission(body.mission);
   const rounds = Math.max(1, Math.min(3, Number.isInteger(body.rounds) ? body.rounds : 2));
@@ -702,6 +772,7 @@ async function runTask(body, onStatus, signal) {
   if (llmConfig.configured) {
     try {
       const out = await runTaskWithLLM({ mission, rounds, key, info, roles, matchedKnowledge, approvedTools: Array.isArray(body.approvedTools) ? body.approvedTools : [], onStatus, signal });
+      out.user = user;
       recordMission(out);
       return out;
     } catch (error) {
@@ -727,7 +798,7 @@ async function runTask(body, onStatus, signal) {
   const del = deliverable(mission, key, info);
   if (matchedKnowledge.length) del.sections = [...del.sections, { name: 'Knowledge', content: matchedKnowledge.map((k) => `${k.title}: ${k.content}`).join(' | ') }];
   if (onStatus) onStatus('final', `Routed to ${info.name}; composing ${reports.length} demo reports`);
-  const out = { id: `mission-${Date.now()}`, mission, rounds, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
+  const out = { id: `mission-${Date.now()}`, mission, rounds, user, source: 'MANAGED LOCAL DEMO', capability: info, deliverable: del, reports, knowledge: matchedKnowledge.map((k) => k.title), verdict: { decision, rationale: `The ${info.name} route keeps the work visible, bounded, and reviewable before expansion.`, dissent: 'Do not add providers or autonomous actions until the first slice produces evidence.', next_actions: ['Review the proposed deliverable.', 'Run the smallest end-to-end slice.', 'Test the riskiest assumption.', 'Increase autonomy only after review.'], confidence: confidenceLevels[key] || 'medium', calibrated: true } };
   recordMission(out);
   return out;
 }
@@ -741,6 +812,10 @@ async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
   req.__route = url.pathname;
   const ip = req.socket.remoteAddress || 'unknown';
+  req.__user = getUser(req);
+  if (isWriteRoute(req.method, url.pathname) && !checkAuth(req)) { logRequest(req, 401); return send(res, 401, { error: 'unauthorized', note: 'Set Authorization: Bearer <token>.' }); }
+  if (req.method === 'GET' && url.pathname === '/api/auth/status') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', authRequired, header: 'Authorization: Bearer <token>' }); }
+  if (req.method === 'GET' && url.pathname === '/api/providers/health') { logRequest(req, 200); return send(res, 200, await asyncProviderHealth()); }
   if (req.method === 'GET' && url.pathname === '/api/health') { logRequest(req, 200); return send(res, 200, { ok: true, mode: 'MANAGED LOCAL DEMO', capabilities: capabilities.length }); }
   if (req.method === 'GET' && url.pathname === '/api/capabilities') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', capabilities }); }
   if (req.method === 'GET' && url.pathname === '/api/providers') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', providers: [...Object.entries(providerConfig).map(([kind, cfg]) => ({ kind, provider: cfg.provider, configured: cfg.configured })), { kind: 'llm', provider: llmConfig.model, preset: llmConfig.preset || null, configured: llmConfig.configured }] }); }
@@ -749,12 +824,14 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/missions') {
     const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit')) || 20));
     let rows = [];
-    if (db) { try { rows = db.prepare('SELECT id, mission, capability, rounds, source, created_at FROM missions ORDER BY created_at DESC LIMIT ?').all(limit); } catch { rows = []; } }
+    const userFilter = url.searchParams.get('user') || req.__user;
+    if (db) { try { rows = db.prepare('SELECT id, mission, capability, rounds, source, created_at, user_id FROM missions ORDER BY created_at DESC LIMIT ?').all(limit); } catch { rows = []; } }
+    rows = rows.filter((r) => (r.user_id || 'anonymous') === userFilter);
     logRequest(req, 200);
     return send(res, 200, { source: 'MANAGED LOCAL DEMO', storage: db ? 'sqlite' : 'json', missions: rows });
   }
   if (req.method === 'GET' && url.pathname === '/api/tools') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', tools: TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters, consequence: t.consequence })) }); }
-  if (req.method === 'GET' && url.pathname === '/api/feedback') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.slice(-50) }); }
+  if (req.method === 'GET' && url.pathname === '/api/feedback') { const uf = url.searchParams.get('user') || req.__user; logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Corrections, not model training.', feedback: feedbackStore.filter((e) => (e.user || 'anonymous') === uf).slice(-50) }); }
   if (req.method === 'POST' && url.pathname === '/api/feedback') {
     try {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
@@ -762,7 +839,7 @@ async function handleRequest(req, res) {
       const mission = cleanMission(body.mission);
       const expectedCapability = body.expectedCapability;
       if (!expectedCapability || expectedCapability === 'auto' || !capabilities.some((c) => c.key === expectedCapability)) throw new Error('expectedCapability must be a specific capability key');
-      const entry = { id: `fb-${Date.now()}`, mission, expectedCapability, note: typeof body.note === 'string' ? body.note.slice(0, 300) : '', at: new Date().toISOString() };
+      const entry = { id: `fb-${Date.now()}`, mission, expectedCapability, user: req.__user, note: typeof body.note === 'string' ? body.note.slice(0, 300) : '', at: new Date().toISOString() };
       feedbackStore.push(entry);
       if (feedbackStore.length > 500) feedbackStore = feedbackStore.slice(-500);
       await saveFeedback();
@@ -770,7 +847,7 @@ async function handleRequest(req, res) {
       return send(res, 200, { ok: true, learned: entry });
     } catch (error) { logRequest(req, 400); return send(res, 400, { error: error.message || 'request failed' }); }
   }
-  if (req.method === 'GET' && url.pathname === '/api/knowledge') { logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Stored notes, retrieved by keyword. Not model training.', knowledge: knowledgeStore.slice(-50) }); }
+  if (req.method === 'GET' && url.pathname === '/api/knowledge') { const uf = url.searchParams.get('user') || req.__user; logRequest(req, 200); return send(res, 200, { source: 'MANAGED LOCAL DEMO', note: 'Stored notes, retrieved by keyword. Not model training.', knowledge: knowledgeStore.filter((e) => (e.user || 'anonymous') === uf).slice(-50) }); }
   if (req.method === 'POST' && url.pathname === '/api/knowledge') {
     try {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('request body is too large'); }
@@ -781,7 +858,7 @@ async function handleRequest(req, res) {
       if (!content) throw new Error('content is required');
       if (title.length > 200) throw new Error('title must be 200 characters or fewer');
       if (content.length > 2000) throw new Error('content must be 2000 characters or fewer');
-      const entry = { id: `kn-${Date.now()}`, title, content, at: new Date().toISOString() };
+      const entry = { id: `kn-${Date.now()}`, title, content, user: req.__user, at: new Date().toISOString() };
       knowledgeStore.push(entry);
       if (knowledgeStore.length > 500) knowledgeStore = knowledgeStore.slice(-500);
       await saveKnowledge();
@@ -955,4 +1032,4 @@ if (isMainModule) {
   server.listen(port, '0.0.0.0', () => console.log(`Agent Village listening on port ${port}`));
 }
 
-export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, initStore, saveFeedback, saveKnowledge, recordMission, db, callLLM, runTaskWithLLM, matchKnowledge, matchKnowledgeSemantic, embedText, cosine, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression, metrics, snapshotMetrics, getRequestId, activeRuns, cancelRun, logEvent };
+export { server, port, publicDir, mediaDir, dataDir, runTask, capabilities, cleanMission, RUN_RATE_LIMIT, runRateState, providerConfig, llmConfig, LLM_PRESETS, mediaApprovalState, auditLog, generateMedia, generateImageStableDiffusion, feedbackStore, knowledgeStore, initStore, saveFeedback, saveKnowledge, recordMission, db, callLLM, runTaskWithLLM, matchKnowledge, matchKnowledgeSemantic, embedText, cosine, TOOLS, toolApprovalState, ApprovalRequired, evaluateExpression, metrics, snapshotMetrics, getRequestId, activeRuns, cancelRun, logEvent, checkAuth, getUser, probeProvider, asyncProviderHealth, isWriteRoute, authRequired };
