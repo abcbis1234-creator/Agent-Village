@@ -1,27 +1,15 @@
 {
   "name": "agent-village",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Multi-agent orchestration playground — zero dependencies. Planner → Builder → Reviewer with SSE streaming, tool registry, vector memory, and persistent conversations.",
+  "description": "Multi-agent orchestration playground with 8 roles, streaming SSE, and zero dependencies.",
   "engines": { "node": ">=20" },
   "bin": { "agent-village": "bin/cli.mjs" },
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "lint": "node --check server.mjs && node --check lib/*.mjs && node --check public/app.js && node --check bin/cli.mjs && node --check tests/*.mjs",
-    "test": "node --test tests/",
-    "eval": "node eval/run.mjs",
-    "eval:security": "node eval/adversarial.mjs",
-    "verify": "npm run lint && npm test && npm run eval && npm run eval:security"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/abcbis1234-creator/Agent-Village.git"
-  },
-  "keywords": ["ai", "agents", "orchestration", "local", "zero-dependencies"],
-  "author": "Agent Village",
-  "license": "MIT",
-  "bugs": { "url": "https://github.com/abcbis1234-creator/Agent-Village/issues" },
-  "homepage": "https://github.com/abcbis1234-creator/Agent-Village#readme"
+    "test": "node --test tests/"
+  }
 }

@@ -1,590 +1,203 @@
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
-const historyKey = 'agent-village-history';
-const capabilityInput = $('#capability-input');
-
-const buildingInfo = {
-  command: { title: 'Command Center', kicker: 'Village Hall / Decider', copy: 'The Decider synthesizes the council reports, keeps dissent visible, and issues the final call.', detail: 'Routing policy: bounded local run · Verification: enabled · Provider keys: server-only' },
-  research: { title: 'Research Lab', kicker: 'Lyra / Research', copy: 'Lyra maps evidence gaps and labels assumptions before the village commits to a path.', detail: 'Output: evidence gaps · Risk: disconfirming questions · Status: ready' },
-  forge: { title: 'Factory', kicker: 'Forge / Build', copy: 'Forge turns the decision into the smallest testable slice, with a happy path and a failure path.', detail: 'Output: implementation steps · Guardrail: no arbitrary shell execution in browser' },
-  memory: { title: 'Memory Grove', kicker: 'Semantic memory / local', copy: 'The local edition keeps a small browser history so repeated missions remain inspectable.', detail: 'Storage: browser-local · Retention: last 6 missions · Clearable: yes' },
+const state = { agents: {}, conversations: [], conversationId: null, streaming: false, buffer: '', streamEl: null };
+const $ = (id) => document.getElementById(id);
+const els = {
+  conversations: $('conversations'), agents: $('agents'), transcript: $('transcript'),
+  composer: $('composer'), input: $('message'), status: $('status'),
+  title: $('conv-title'), phase: $('phase'), newBtn: $('new-conv'),
+  palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
 };
+const setStatus = (t) => (els.status.textContent = t ?? '');
 
-function setClock() {
-  const now = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date());
-  document.title = `Agent Village · ${now}`;
-}
-setClock();
-setInterval(setClock, 30000);
-
-function getHistory() {
-  try { return JSON.parse(localStorage.getItem(historyKey) || '[]'); } catch { return []; }
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
 }
 
-function saveHistory(result) {
-  const list = [
-    { id: result.id, mission: result.mission, decision: result.verdict.decision, at: new Date().toISOString() },
-    ...getHistory().filter((x) => x.mission !== result.mission),
-  ].slice(0, 6);
-  localStorage.setItem(historyKey, JSON.stringify(list));
-  const countEl = $('#history-count');
-  if (countEl) countEl.textContent = list.length;
-}
-
-function setRunning(isRunning) {
-  $$('[data-agent]').forEach((agent) => agent.classList.toggle('working', isRunning));
-  const liveEl = $('#agent-live-count');
-  if (liveEl) liveEl.textContent = isRunning ? '5' : '0';
-}
-
-function setWorkbenchStatus(status, confidence = '—') {
-  const statusEl = $('#workbench-status');
-  const confEl = $('#workbench-confidence');
-  if (statusEl) statusEl.textContent = status;
-  if (confEl) confEl.textContent = confidence;
-}
-
-function addActivity(title, detail, state = 'done') {
-  const stream = $('#activity-stream');
-  if (!stream) return;
-  const item = document.createElement('div');
-  item.className = 'activity-item';
-  const dot = document.createElement('span');
-  dot.className = `activity-dot ${state}`;
-  const copy = document.createElement('div');
-  const strong = document.createElement('b');
-  strong.textContent = title;
-  const small = document.createElement('small');
-  small.textContent = detail;
-  copy.append(strong, small);
-  item.append(dot, copy);
-  stream.appendChild(item);
-}
-
-async function loadAgentContract() {
-  try {
-    const response = await fetch('/api/agent-contract');
-    const contract = await response.json();
-    const codeEl = $('#handoff-code');
-    const copyBtn = $('#copy-contract');
-    if (codeEl) codeEl.textContent = JSON.stringify(contract, null, 2);
-    if (copyBtn) copyBtn.dataset.contract = JSON.stringify(contract);
-  } catch {
-    const codeEl = $('#handoff-code');
-    if (codeEl) codeEl.textContent = 'Contract unavailable';
+function renderAgents() {
+  els.agents.replaceChildren();
+  for (const a of Object.values(state.agents)) {
+    const li = document.createElement('li');
+    li.className = 'agent';
+    const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = a.color;
+    const label = document.createElement('div');
+    const name = document.createElement('strong'); name.textContent = `${a.emoji} ${a.name}`;
+    const role = document.createElement('span'); role.className = 'role'; role.textContent = a.role;
+    label.append(name, role); li.append(dot, label); els.agents.append(li);
   }
 }
 
-async function loadCapabilities() {
-  try {
-    const response = await fetch('/api/capabilities');
-    const payload = await response.json();
-    const list = $('#capability-list');
-    if (!list) return;
-    list.textContent = '';
-    (payload.capabilities || []).filter((item) => item.key !== 'auto').forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'capability-chip';
-      const icon = document.createElement('span');
-      icon.className = 'capability-icon';
-      icon.textContent = item.icon;
-      const copy = document.createElement('div');
-      const name = document.createElement('strong');
-      name.textContent = item.name;
-      const description = document.createElement('small');
-      description.textContent = item.description;
-      copy.append(name, description);
-      row.append(icon, copy);
-      list.appendChild(row);
-    });
-  } catch {
-    /* The core app remains useful if the registry endpoint is unavailable. */
+function renderConversations() {
+  els.conversations.replaceChildren();
+  for (const c of state.conversations) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'conv-btn' + (c.id === state.conversationId ? ' active' : '');
+    btn.textContent = c.title;
+    btn.addEventListener('click', () => openConversation(c.id));
+    li.append(btn); els.conversations.append(li);
   }
 }
 
-function showBuilding(key) {
-  const info = buildingInfo[key];
-  if (!info) return;
-  const kickerEl = $('#building-kicker');
-  const titleEl = $('#building-title');
-  const copyEl = $('#building-copy');
-  const detailsEl = $('#building-details');
-  if (kickerEl) kickerEl.textContent = info.kicker;
-  if (titleEl) titleEl.textContent = info.title;
-  if (copyEl) copyEl.textContent = info.copy;
-  if (detailsEl) detailsEl.textContent = info.detail;
-  const dialog = $('#building-dialog');
-  if (dialog) dialog.showModal();
+function bubble({ role, agentId, content, kind }) {
+  const wrap = document.createElement('div');
+  wrap.className = `bubble ${role}${kind ? ' ' + kind : ''}`;
+  const who = document.createElement('div'); who.className = 'who';
+  if (role === 'user') who.textContent = 'you';
+  else if (agentId === 'system') who.textContent = 'system';
+  else { const a = state.agents[agentId]; who.textContent = a ? `${a.emoji} ${a.name}` : agentId ?? 'agent'; if (a) who.style.color = a.color; }
+  const body = document.createElement('div'); body.className = 'body'; body.textContent = content;
+  wrap.append(who, body);
+  return wrap;
 }
 
-$$('[data-building]').forEach((button) => button.addEventListener('click', () => showBuilding(button.dataset.building)));
-
-$$('.view-tab').forEach((button) => button.addEventListener('click', () => {
-  $$('.view-tab').forEach((tab) => tab.classList.toggle('active', tab === button));
-  const view = button.dataset.view;
-  const town = $('#town-view');
-  const station = $('#station-view');
-  const workbench = $('#workbench-view');
-  const caption = $('#mode-caption');
-  if (town) town.classList.toggle('hidden', view !== 'town');
-  if (station) station.classList.toggle('hidden', view !== 'station');
-  if (workbench) workbench.classList.toggle('hidden', view !== 'workbench');
-  if (caption) caption.textContent = view === 'town' ? 'Town view / live overview' : view === 'station' ? 'Station view / orchestration graph' : 'Workbench / supervised execution';
-}));
-
-function drawOutput(result) {
-  const reports = $('#report-list');
-  if (reports) reports.textContent = '';
-  const latest = (result.reports || []).filter((report) => report.round === result.rounds);
-  const colors = { nova: '#bd9aff', atlas: '#7bb9ff', lyra: '#83d69b', forge: '#f8a05b', echo: '#ff9fbb' };
-  if (reports) {
-    latest.forEach((report) => {
-      const row = document.createElement('article');
-      row.className = 'report-row';
-      const meta = document.createElement('div');
-      meta.className = 'report-meta';
-      if (colors[report.role.key]) meta.style.color = colors[report.role.key];
-      meta.textContent = report.role.name;
-      const metaSmall = document.createElement('small');
-      metaSmall.textContent = `${report.role.specialty} · R${report.round}`;
-      meta.appendChild(metaSmall);
-      const text = document.createElement('p');
-      text.textContent = report.text;
-      row.append(meta, text);
-      reports.appendChild(row);
-    });
-  }
-
-  const panel = $('#decider-panel');
-  if (panel) {
-    panel.textContent = '';
-    const title = document.createElement('div');
-    title.className = 'panel-title';
-    title.textContent = 'DECIDER / FINAL WORD';
-    const h = document.createElement('h3');
-    h.textContent = result.verdict && result.verdict.decision ? result.verdict.decision : 'No decision';
-    const rationale = document.createElement('p');
-    rationale.textContent = result.verdict && result.verdict.rationale ? result.verdict.rationale : '';
-    const dissentLabel = document.createElement('h4');
-    dissentLabel.textContent = 'Dissent / watch-outs';
-    const dissent = document.createElement('p');
-    dissent.textContent = result.verdict && result.verdict.dissent ? result.verdict.dissent : '';
-    const nextLabel = document.createElement('h4');
-    nextLabel.textContent = 'Next actions';
-    const list = document.createElement('ul');
-    (result.verdict && result.verdict.next_actions || []).forEach((action) => {
-      const li = document.createElement('li');
-      li.textContent = action;
-      list.appendChild(li);
-    });
-    const deliverableLabel = document.createElement('h4');
-    deliverableLabel.textContent = `Deliverable / ${result.deliverable && result.deliverable.title ? result.deliverable.title : '—'}`;
-    const deliverable = document.createElement('div');
-    deliverable.className = 'deliverable-stack';
-    (result.deliverable && result.deliverable.sections || []).slice(0, 5).forEach((section) => {
-      const item = document.createElement('p');
-      item.className = 'deliverable-item';
-      item.textContent = `${section.name}: ${section.content}`;
-      deliverable.appendChild(item);
-    });
-    panel.append(title, h, rationale, dissentLabel, dissent, nextLabel, list, deliverableLabel, deliverable);
-  }
-
-  const outputTitle = $('#output-title');
-  const missionCardTitle = $('#mission-card-title');
-  const missionCardCopy = $('#mission-card-copy');
-  const missionProgress = $('#mission-progress');
-  const missionProgressLabel = $('#mission-progress-label');
-  const townTitle = $('#town-title');
-  const townSubtitle = $('#town-subtitle');
-  const bubbleOne = $('#bubble-one');
-  const bubbleTwo = $('#bubble-two');
-  const bubbleThree = $('#bubble-three');
-  const kpiMissions = $('#kpi-missions');
-  const kpiReports = $('#kpi-reports');
-  const kpiWake = $('#kpi-wake');
-  const stationCalls = $('#station-calls');
-  const stationCost = $('#station-cost');
-  const latestTrail = $('#latest-trail');
-
-  if (outputTitle) outputTitle.textContent = result.mission;
-  if (missionCardTitle) missionCardTitle.textContent = result.mission;
-  if (missionCardCopy) missionCardCopy.textContent = `${result.capability && result.capability.name ? result.capability.name : '—'} route · ${(result.capability && result.capability.tools || []).join(' · ')}`;
-  if (missionProgress) missionProgress.style.width = '100%';
-  if (missionProgressLabel) missionProgressLabel.textContent = '100% complete';
-  if (townTitle) townTitle.textContent = `The village routed to ${result.capability && result.capability.name ? result.capability.name : '—'}.`;
-  if (townSubtitle) townSubtitle.textContent = 'Every report is labeled MANAGED LOCAL DEMO and every next action is inspectable.';
-  if (bubbleOne) bubbleOne.textContent = (result.capability && result.capability.name ? result.capability.name : '—').toLowerCase();
-  if (bubbleTwo) bubbleTwo.textContent = 'verifying';
-  if (bubbleThree) bubbleThree.textContent = 'delivered';
-  if (kpiMissions) kpiMissions.textContent = getHistory().length;
-  if (kpiReports) kpiReports.textContent = result.reports ? result.reports.length : 0;
-  if (kpiWake) kpiWake.textContent = 'complete';
-  if (stationCalls) stationCalls.textContent = (result.reports ? result.reports.length : 0) + 1;
-  if (stationCost) stationCost.textContent = '$0.00';
-  if (latestTrail) {
-    latestTrail.textContent = '';
-    ['Router selected ' + (result.capability && result.capability.name || '—'), 'Five bounded reports returned', 'Decider issued verdict'].forEach((step, index) => {
-      const p = document.createElement('p');
-      p.className = 'policy-row';
-      const s = document.createElement('span');
-      s.textContent = `${String(index + 1).padStart(2, '0')}  ${step}`;
-      const b = document.createElement('b');
-      b.textContent = 'done';
-      p.append(s, b);
-      latestTrail.appendChild(p);
-    });
-  }
-  setWorkbenchStatus('REVIEW', (result.verdict && result.verdict.confidence ? result.verdict.confidence : '—').toUpperCase());
-  const activityStream = $('#activity-stream');
-  if (activityStream) activityStream.textContent = '';
-  addActivity('Request accepted', 'Mission context bounded at the server edge.');
-  addActivity('Routed to ' + (result.capability && result.capability.name || '—'), (result.capability && result.capability.tools || []).join(' · '));
-  addActivity('Council reports returned', (result.reports ? result.reports.length : 0) + ' labeled reports available.');
-  addActivity('Decider ready for review', 'Approve, pause, or hand off the contract.', 'active');
+function chip({ icon, label, detail }) {
+  const el = document.createElement('div');
+  el.className = 'chip';
+  const l = document.createElement('span'); l.className = 'label'; l.textContent = `${icon} ${label}`;
+  const d = document.createElement('span'); d.className = 'detail'; d.textContent = detail ?? '';
+  el.append(l, d);
+  return el;
 }
 
-async function runStream(payload) {
-  const response = await fetch('/api/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, stream: true }),
-  });
-  if (!response.body) {
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Mission failed');
-    return data;
-  }
+function scrollBottom() { els.transcript.scrollTop = els.transcript.scrollHeight; }
+
+async function loadAgents() { const { agents } = await api('/api/agents'); state.agents = Object.fromEntries(agents.map((a) => [a.id, a])); renderAgents(); }
+async function loadConversations() { const { conversations } = await api('/api/conversations'); state.conversations = conversations; renderConversations(); }
+
+async function newConversation() {
+  const c = await api('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: 'planner' }) });
+  state.conversations.unshift(c); renderConversations(); await openConversation(c.id);
+}
+
+async function openConversation(id) {
+  state.conversationId = id;
+  const c = await api(`/api/conversations/${id}`);
+  els.title.textContent = c.title;
+  els.transcript.replaceChildren();
+  for (const m of c.messages) els.transcript.append(bubble(m));
+  renderConversations(); scrollBottom();
+}
+
+async function* sseStream(response) {
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finalResult = null;
+  const dec = new TextDecoder();
+  let buf = '';
   while (true) {
-    const { done, value } = await reader.read();
+    const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let index;
-    while ((index = buffer.indexOf('\n\n')) >= 0) {
-      const block = buffer.slice(0, index);
-      buffer = buffer.slice(index + 2);
-      let event = 'message';
-      let data = '';
-      for (const line of block.split('\n')) {
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const raw = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      let event = 'message'; const data = [];
+      for (const line of raw.split('\n')) {
         if (line.startsWith('event: ')) event = line.slice(7);
-        else if (line.startsWith('data: ')) data = line.slice(6);
+        else if (line.startsWith('data: ')) data.push(line.slice(6));
       }
-      if (!data) continue;
-      let parsed;
-      try { parsed = JSON.parse(data); } catch { continue; }
-      if (event === 'status') {
-        if (parsed.phase === 'model') addActivity('Model', parsed.message, 'done');
-        else if (parsed.phase === 'tool') addActivity('Tool call', parsed.message, 'active');
-        else addActivity('Status', parsed.message, 'done');
-      } else if (event === 'approval') {
-        throw { approval: parsed };
-      } else if (event === 'error') {
-        throw new Error(parsed.message || 'Mission failed');
-      } else if (event === 'result') {
-        finalResult = parsed;
-      }
+      if (data.length) { try { yield { event, data: JSON.parse(data.join('\n')) }; } catch { yield { event, data: data.join('\n') }; } }
     }
   }
-  if (!finalResult) throw new Error('No result from stream');
-  return finalResult;
 }
 
-async function runMission(event) {
-  event.preventDefault();
-  const missionInput = $('#mission-input');
-  const mission = missionInput ? missionInput.value.trim() : '';
-  const roundsInput = $('#round-input');
-  const rounds = roundsInput ? Number(roundsInput.value) : 2;
-  const capability = capabilityInput ? capabilityInput.value : 'auto';
-  if (!mission) {
-    if (missionInput) missionInput.focus();
-    return;
-  }
-
-  const dialog = $('#mission-dialog');
-  const start = $('#run-mission');
-  if (start) {
-    start.disabled = true;
-    start.textContent = 'Council running…';
-  }
-  setRunning(true);
-  setWorkbenchStatus('RUNNING', '—');
-  const activityStream = $('#activity-stream');
-  if (activityStream) activityStream.textContent = '';
-  addActivity('Request accepted', 'Building a bounded plan…', 'active');
-  const missionProgress = $('#mission-progress');
-  if (missionProgress) missionProgress.style.width = '32%';
-  const townTitle = $('#town-title');
-  const townSubtitle = $('#town-subtitle');
-  if (townTitle) townTitle.textContent = 'Agents are moving through the village.';
-  if (townSubtitle) townSubtitle.textContent = 'Routing → reports → verification → Decider';
+async function sendMessage(message) {
+  if (state.streaming) return;
+  state.streaming = true;
+  els.transcript.append(bubble({ role: 'user', content: message })); scrollBottom();
 
   try {
-    let payload = { mission, rounds, capability };
-    let result = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        result = await runStream(payload);
-        break;
-      } catch (error) {
-        if (error && error.approval && attempt === 0) {
-          const approve = window.confirm(`Approve tool "${error.approval.tool}"?\n${JSON.stringify(error.approval.args).slice(0, 300)}`);
-          if (!approve) throw new Error('Tool approval declined');
-          await fetch('/api/tools/approve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: error.approval.id }),
-          });
-          payload = { mission, rounds, capability, approvedTools: [error.approval.id] };
-          continue;
-        }
-        throw error;
+    const res = await fetch(`/api/conversations/${state.conversationId}/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
+    });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error ?? `HTTP ${res.status}`); }
+
+    for await (const { event, data } of sseStream(res)) {
+      if (event === 'phase') { els.phase.hidden = false; els.phase.textContent = `phase · ${data.phase}`; els.phase.style.color = state.agents[data.agentId]?.color ?? ''; }
+      else if (event === 'memory_packet') {
+        if (data.packet.length) els.transcript.append(chip({ icon: '📚', label: `recalled ${data.packet.length} memories`, detail: data.packet.map((p) => p.text).join(' · ') }));
+        scrollBottom();
       }
+      else if (event === 'scout_report') {
+        els.transcript.append(chip({ icon: '🔍', label: 'scout', detail: `intent: ${data.intent}, domain: ${data.domain}${data.ambiguities?.length ? `, ambiguities: ${data.ambiguities.join(', ')}` : ''}` }));
+        scrollBottom();
+      }
+      else if (event === 'planner_raw') {
+        els.transcript.append(chip({ icon: '🧭', label: `plan: ${data.steps.length} step${data.steps.length === 1 ? '' : 's'}`, detail: data.steps.map((s) => `${s.tool}(${JSON.stringify(s.args ?? {})})`).join(' · ') || 'no tools' }));
+        scrollBottom();
+      }
+      else if (event === 'security_decision') {
+        const v = data.decision.verdict;
+        const icon = v === 'deny' ? '⛔' : v === 'require_approval' ? '🔐' : '✅';
+        els.transcript.append(chip({ icon, label: `security ${v}`, detail: `${data.decision.tool}: ${(data.decision.reasons ?? []).join('; ') || 'ok'}` }));
+        scrollBottom();
+      }
+      else if (event === 'tool_result') { els.transcript.append(chip({ icon: '⚙', label: data.tool, detail: String(data.result).slice(0, 200) })); scrollBottom(); }
+      else if (event === 'tool_error') { els.transcript.append(chip({ icon: '✗', label: `${data.tool} failed`, detail: data.error })); scrollBottom(); }
+      else if (event === 'verification') {
+        if (data.findings?.length) els.transcript.append(chip({ icon: '🛡️', label: `verifier: ${data.severity}`, detail: data.findings.map((f) => f.kind).join(', ') }));
+        scrollBottom();
+      }
+      else if (event === 'message_start') {
+        state.streamEl = bubble({ role: 'agent', agentId: data.agentId, content: '' });
+        state.streamEl.classList.add('streaming'); state.buffer = '';
+        els.transcript.append(state.streamEl); scrollBottom();
+      }
+      else if (event === 'chunk') {
+        state.buffer += data.content;
+        const body = state.streamEl?.querySelector('.body'); if (body) body.textContent = state.buffer;
+        scrollBottom();
+      }
+      else if (event === 'message_end') { state.streamEl?.classList.remove('streaming'); state.streamEl = null; }
+      else if (event === 'critique') {
+        const v = data.verdict;
+        els.transcript.append(chip({ icon: v.overall === 'reject' ? '⚖️' : '✓', label: `critic: ${v.overall} (${v.calibrated})`, detail: v.findings.map((f) => f.finding ?? (f.gaps?.join(', ')) ?? f.counterCase).filter(Boolean).join(' · ') || 'no findings' }));
+        scrollBottom();
+      }
+      else if (event === 'budget') { els.transcript.append(chip({ icon: '💾', label: 'budget', detail: `tokens: ${data.snapshot.used.tokens}, tools: ${data.snapshot.used.toolCalls}, ${data.snapshot.elapsedMs}ms` })); }
+      else if (event === 'error') { els.transcript.append(bubble({ role: 'agent', agentId: 'system', content: `Error (${data.where ?? 'run'}): ${data.message}` })); }
     }
-    if (!result) throw new Error('Mission did not complete');
-    drawOutput(result);
-    saveHistory(result);
-    (result.toolTrace || []).forEach((t) => addActivity(`Tool · ${t.tool}`, String(t.result).slice(0, 120), 'done'));
-    if (dialog) dialog.close();
-  } catch (error) {
-    setWorkbenchStatus('BLOCKED', 'LOW');
-    addActivity('Run blocked', error.message, 'error');
-    const missionCardCopy = $('#mission-card-copy');
-    if (missionCardCopy) missionCardCopy.textContent = error.message;
-    const townTitle = $('#town-title');
-    if (townTitle) townTitle.textContent = 'The village needs another try.';
+  } catch (err) {
+    els.transcript.append(bubble({ role: 'agent', agentId: 'system', content: `Error: ${err.message}` }));
   } finally {
-    if (start) {
-      start.disabled = false;
-      start.innerHTML = 'Start council <b>↗</b>';
-    }
-    setRunning(false);
+    state.streaming = false; els.phase.hidden = true; scrollBottom();
+    loadConversations().catch(() => {});
   }
 }
 
-$('#open-mission').addEventListener('click', () => { const d = $('#mission-dialog'); if (d) d.showModal(); });
-$('#mission-form').addEventListener('submit', runMission);
-$('#open-history').addEventListener('click', () => {
-  const items = getHistory();
-  if (items.length) {
-    const title = $('#mission-card-title');
-    const copy = $('#mission-card-copy');
-    if (title) title.textContent = items[0].mission;
-    if (copy) copy.textContent = items[0].decision;
+function openPalette() { els.palette.hidden = false; els.paletteInput.value = ''; renderPaletteList(''); els.paletteInput.focus(); }
+function closePalette() { els.palette.hidden = true; }
+function renderPaletteList(q) {
+  const query = q.toLowerCase();
+  els.paletteList.replaceChildren();
+  for (const c of state.conversations.filter((c) => c.title.toLowerCase().includes(query))) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = c.title;
+    btn.addEventListener('click', () => { closePalette(); openConversation(c.id); });
+    li.append(btn); els.paletteList.append(li);
   }
+}
+
+els.composer.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!state.conversationId) { setStatus('Create a conversation first.'); return; }
+  const message = els.input.value.trim();
+  if (!message) return;
+  els.input.value = ''; setStatus(''); sendMessage(message);
+});
+els.newBtn.addEventListener('click', () => newConversation().catch((e) => setStatus(e.message)));
+els.paletteInput.addEventListener('input', (e) => renderPaletteList(e.target.value));
+els.palette.addEventListener('click', (e) => { if (e.target === els.palette) closePalette(); });
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
+  if (e.key === 'Escape') closePalette();
 });
 
-$('#kpi-missions').textContent = getHistory().length;
-$('#history-count').textContent = getHistory().length;
-
-$('#approve-plan').addEventListener('click', () => {
-  setWorkbenchStatus('APPROVED', 'HIGH');
-  addActivity('Plan approved', 'The next connector may execute only within the reviewed scope.', 'active');
-});
-$('#pause-run').addEventListener('click', () => {
-  setWorkbenchStatus('PAUSED', '—');
-  addActivity('Run paused', 'No external action will continue until resumed.', 'error');
-});
-
-$('#copy-contract').addEventListener('click', async () => {
+(async function boot() {
   try {
-    const text = $('#copy-contract').dataset.contract || $('#handoff-code').textContent;
-    await navigator.clipboard.writeText(text);
-    $('#copy-contract').textContent = 'Copied';
-    setTimeout(() => { $('#copy-contract').textContent = 'Copy contract'; }, 1500);
-  } catch {
-    $('#copy-contract').textContent = 'Select and copy';
-  }
-});
-
-async function loadProviders() {
-  try {
-    const response = await fetch('/api/providers');
-    const payload = await response.json();
-    const list = $('#capability-list');
-    if (!list) return;
-    const providerBox = document.createElement('div');
-    providerBox.className = 'provider-status';
-    const title = document.createElement('strong');
-    title.textContent = 'Media providers';
-    providerBox.appendChild(title);
-    (payload.providers || []).forEach((p) => {
-      const row = document.createElement('div');
-      row.className = 'provider-row';
-      const name = document.createElement('span');
-      name.textContent = `${p.kind} (${p.provider || 'none'})`;
-      const status = document.createElement('span');
-      status.className = `provider-status-dot ${p.configured ? 'configured' : 'unconfigured'}`;
-      status.textContent = p.configured ? 'configured' : 'not configured';
-      row.appendChild(name);
-      row.appendChild(status);
-      providerBox.appendChild(row);
-    });
-    list.appendChild(providerBox);
-  } catch {
-    /* The core app remains useful if the registry endpoint is unavailable. */
-  }
-}
-
-async function approveMedia(id) {
-  try {
-    const response = await fetch('/api/media/approve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Approval failed');
-    return result;
-  } catch (error) {
-    addActivity('Media approval failed', error.message, 'error');
-    throw error;
-  }
-}
-
-async function runMedia(kind, prompt) {
-  try {
-    const response = await fetch('/api/media/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind, prompt, approved: false }),
-    });
-    const result = await response.json();
-    if (response.status === 202) {
-      addActivity('Media approval required', `${kind}: ${prompt.slice(0, 60)}…`, 'active');
-      const approved = await approveMedia(result.id);
-      const gen = await fetch('/api/media/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, prompt, approved: true, id: result.id }),
-      });
-      const out = await gen.json();
-      if (!gen.ok) throw new Error(out.error || 'Generation failed');
-      addActivity(`${kind} generated`, out.status, 'done');
-      return out;
-    }
-    if (!response.ok) throw new Error(result.error || 'Generation failed');
-    addActivity(`${kind} generated`, result.status, 'done');
-    return result;
-  } catch (error) {
-    addActivity('Media generation blocked', error.message, 'error');
-    throw error;
-  }
-}
-
-const generateImageBtn = $('#generate-image');
-if (generateImageBtn) {
-  generateImageBtn.addEventListener('click', async () => {
-    const promptEl = $('#media-prompt');
-    const resultEl = $('#media-result');
-    const prompt = promptEl ? promptEl.value.trim() : '';
-    if (!prompt) { if (promptEl) promptEl.focus(); return; }
-    if (resultEl) resultEl.innerHTML = '<small class="muted">Generating… approval gate → Stable Diffusion</small>';
-    generateImageBtn.disabled = true;
-    try {
-      const out = await runMedia('image', prompt);
-      if (resultEl) {
-        resultEl.textContent = '';
-        if (out.url) {
-          const img = document.createElement('img');
-          img.src = out.url;
-          img.alt = prompt;
-          img.className = 'media-image';
-          resultEl.appendChild(img);
-          const link = document.createElement('small');
-          link.className = 'muted';
-          link.textContent = `${out.provider} · ${out.filename || out.url}`;
-          resultEl.appendChild(link);
-        } else {
-          const note = document.createElement('small');
-          note.className = 'muted';
-          note.textContent = out.note || out.status || 'No image returned.';
-          resultEl.appendChild(note);
-        }
-      }
-    } catch (error) {
-      if (resultEl) {
-        resultEl.textContent = '';
-        const note = document.createElement('small');
-        note.className = 'muted';
-        note.textContent = error.message;
-        resultEl.appendChild(note);
-      }
-    } finally {
-      generateImageBtn.disabled = false;
-    }
-  });
-}
-async function populateFeedbackCapabilities() {
-  try {
-    const response = await fetch('/api/capabilities');
-    const payload = await response.json();
-    const select = $('#feedback-capability');
-    if (!select) return;
-    select.textContent = '';
-    (payload.capabilities || []).filter((c) => c.key !== 'auto').forEach((c) => {
-      const opt = document.createElement('option');
-      opt.value = c.key;
-      opt.textContent = c.name;
-      select.appendChild(opt);
-    });
-  } catch { /* ignore */ }
-}
-
-function showTeach(message) {
-  const el = $('#teach-result');
-  if (!el) return;
-  el.textContent = '';
-  const small = document.createElement('small');
-  small.className = 'muted';
-  small.textContent = message;
-  el.appendChild(small);
-}
-
-const addKnowledgeBtn = $('#add-knowledge');
-if (addKnowledgeBtn) {
-  addKnowledgeBtn.addEventListener('click', async () => {
-    const titleEl = $('#knowledge-title');
-    const contentEl = $('#knowledge-content');
-    const title = titleEl ? titleEl.value.trim() : '';
-    const content = contentEl ? contentEl.value.trim() : '';
-    if (!title || !content) { showTeach('Title and content are required.'); return; }
-    try {
-      const res = await fetch('/api/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content }) });
-      const out = await res.json();
-      if (!res.ok) throw new Error(out.error || 'Failed');
-      showTeach(`Saved knowledge: ${out.entry.title}`);
-      addActivity('Knowledge saved', out.entry.title, 'done');
-      if (titleEl) titleEl.value = '';
-      if (contentEl) contentEl.value = '';
-    } catch (error) { showTeach(error.message); }
-  });
-}
-
-const addFeedbackBtn = $('#add-feedback');
-if (addFeedbackBtn) {
-  addFeedbackBtn.addEventListener('click', async () => {
-    const missionEl = $('#feedback-mission');
-    const capEl = $('#feedback-capability');
-    const mission = missionEl ? missionEl.value.trim() : '';
-    const expectedCapability = capEl ? capEl.value : '';
-    if (!mission || !expectedCapability) { showTeach('Mission and target capability are required.'); return; }
-    try {
-      const res = await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mission, expectedCapability }) });
-      const out = await res.json();
-      if (!res.ok) throw new Error(out.error || 'Failed');
-      showTeach(`Learned: "${out.learned.mission}" → ${out.learned.expectedCapability}`);
-      addActivity('Route correction saved', `${out.learned.mission} → ${out.learned.expectedCapability}`, 'done');
-      if (missionEl) missionEl.value = '';
-    } catch (error) { showTeach(error.message); }
-  });
-}
-
-loadCapabilities();
-loadAgentContract();
-loadProviders();
-populateFeedbackCapabilities();
+    await loadAgents(); await loadConversations();
+    if (state.conversations.length > 0) await openConversation(state.conversations[0].id);
+    else await newConversation();
+  } catch (err) { setStatus(`Boot failed: ${err.message}`); }
+})();

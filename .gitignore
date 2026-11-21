@@ -1,11 +1,8 @@
 node_modules/
 data/
-webnovels/
 .env
 .env.local
 *.log
-npm-debug.log*
 .DS_Store
 Thumbs.db
 coverage/
-dist/

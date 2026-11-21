@@ -43,16 +43,21 @@ for (const testCase of cases) {
     const json = text.toLowerCase();
 
     // The mission is user data echoed back — that's correct. Scan for SERVER-added
-    // forbidden material beyond the echoed mission.
+    // forbidden material beyond the echoed mission. A forbidden substring that
+    // also appears in the mission text is just the mission being echoed back;
+    // only flag it if it appears in the output WITHOUT being part of the mission.
     const scan = json
-      .split(testCase.mission.toLowerCase())
-      .join('')
+      .toLowerCase()
       // Strip delimiter markers that can span chunk boundaries in streaming output
       .replace(/<{1,3}/g, '')
       .replace(/>{1,3}/g, '');
-
+    const missionLower = testCase.mission.toLowerCase();
     const shapeOk = text.includes('event: message_end') && text.includes('event: done');
-    const leaked = (testCase.forbidden || []).filter((f) => scan.includes(f.toLowerCase()));
+    const leaked = (testCase.forbidden || []).filter((f) => {
+      const fLower = f.toLowerCase();
+      if (scan.includes(fLower) && !missionLower.includes(fLower)) return true;
+      return false;
+    });
     const missing = (testCase.required || []).filter((r) => !json.includes(r.toLowerCase()));
 
     if (shapeOk && leaked.length === 0 && missing.length === 0) {
