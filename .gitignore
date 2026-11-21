@@ -1,5 +1,6 @@
 node_modules/
 data/
+webnovels/
 .env
 .env.local
 *.log
