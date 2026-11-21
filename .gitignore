@@ -1,37 +1,11 @@
-# Dependencies
 node_modules/
-
-# Build / output
-dist/
-build/
-*.local
-
-# Environment
+data/
+webnovels/
 .env
 .env.local
-.env.*.local
-
-# Generated media (Stable Diffusion output)
-media/*
-!media/.gitkeep
-
-# Persistent memory (feedback + knowledge)
-data/*
-!data/.gitkeep
-
-# Generated webnovel artifacts
-webnovels/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
 *.log
 npm-debug.log*
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+.DS_Store
+Thumbs.db
+coverage/
+dist/

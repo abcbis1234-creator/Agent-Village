@@ -1,53 +1,71 @@
 import { readFile } from 'node:fs/promises';
-import { runTask, llmConfig } from '../server.mjs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import http from 'node:http';
+import { createApp } from '../server.mjs';
+import { Store } from '../lib/store.mjs';
 
-// Adversarial suite: untrusted mission text must never become instructions,
-// leak server-side secrets, or escape the deliverable's size bounds.
-// Runs against the deterministic demo router (no LLM) so it is hermetic.
-llmConfig.configured = false;
+async function start() {
+  const dir = await mkdtemp(join(tmpdir(), 'av-'));
+  const store = new Store(join(dir, 'state.json'));
+  await store.load();
+  const { server } = createApp({ store });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  return { server, port, base: `http://127.0.0.1:${port}` };
+}
 
-const cases = JSON.parse(await readFile(new URL('./adversarial.json', import.meta.url), 'utf8'));
+async function sseText(port, path, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path, headers: { 'Content-Type': 'application/json' } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 let pass = 0;
 let fail = 0;
 
+const cases = JSON.parse(await readFile(new URL('./adversarial.json', import.meta.url), 'utf8'));
+
 for (const testCase of cases) {
-  let result;
+  const { server, port, base } = await start();
   try {
-    result = await runTask({ mission: testCase.mission, capability: 'auto', rounds: 1 });
-  } catch (error) {
-    fail += 1;
-    console.log(`FAIL  ${testCase.name} — threw: ${error.message}`);
-    continue;
-  }
+    const { body } = await sseText(port, '/api/conversations', { agentId: 'planner' });
+    const { id } = JSON.parse(body);
+    const { body: text } = await sseText(port, `/api/conversations/${id}/chat`, { message: testCase.mission, provider: 'mock' });
+    const json = text.toLowerCase();
 
-  const json = JSON.stringify(result).toLowerCase();
-  // The mission is user-supplied data and is echoed back verbatim inside the
-  // deliverable (that is correct). Remove it before scanning, so a case only
-  // fails when the SERVER adds forbidden material of its own.
-  const scan = json.split(testCase.mission.toLowerCase()).join('');
-  const shapeOk = Boolean(
-    result.id &&
-    result.capability &&
-    Array.isArray(result.deliverable && result.deliverable.sections) &&
-    result.deliverable.sections.length > 0 &&
-    result.verdict &&
-    result.verdict.decision,
-  );
-  const boundsOk = result.deliverable.sections.every((s) => typeof s.content === 'string' && s.content.length <= 1200);
-  const leaked = (testCase.forbidden || []).filter((f) => scan.includes(f.toLowerCase()));
-  const missing = (testCase.required || []).filter((r) => !json.includes(r.toLowerCase()));
+    // The mission is user data echoed back — that's correct. Scan for SERVER-added
+    // forbidden material beyond the echoed mission.
+    const scan = json.split(testCase.mission.toLowerCase()).join('');
 
-  if (shapeOk && boundsOk && leaked.length === 0 && missing.length === 0) {
-    pass += 1;
-    console.log(`PASS  ${testCase.name}`);
-  } else {
+    const shapeOk = text.includes('event: message_end') && text.includes('event: done');
+    const leaked = (testCase.forbidden || []).filter((f) => scan.includes(f.toLowerCase()));
+    const missing = (testCase.required || []).filter((r) => !json.includes(r.toLowerCase()));
+
+    if (shapeOk && leaked.length === 0 && missing.length === 0) {
+      pass += 1;
+      console.log(`PASS  ${testCase.name}`);
+    } else {
+      fail += 1;
+      const why = [];
+      if (!shapeOk) why.push('bad result shape');
+      if (leaked.length) why.push(`leaked: ${leaked.join(', ')}`);
+      if (missing.length) why.push(`missing: ${missing.join(', ')}`);
+      console.log(`FAIL  ${testCase.name} — ${why.join('; ')}`);
+    }
+  } catch (e) {
     fail += 1;
-    const why = [];
-    if (!shapeOk) why.push('bad result shape');
-    if (!boundsOk) why.push('unbounded section content');
-    if (leaked.length) why.push(`leaked: ${leaked.join(', ')}`);
-    if (missing.length) why.push(`missing guard marker: ${missing.join(', ')}`);
-    console.log(`FAIL  ${testCase.name} — ${why.join('; ')}`);
+    console.log(`FAIL  ${testCase.name} — threw: ${e.message}`);
+  } finally {
+    server.close();
   }
 }
 

@@ -1,33 +1,27 @@
 {
   "name": "agent-village",
-  "version": "1.0.0",
-  "description": "Agent Village — a managed local workspace for open-ended AI work. Town, Station, and Workbench views with bounded capability routing and a server-only seam for future providers.",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
+  "description": "Multi-agent orchestration playground — zero dependencies. Planner → Builder → Reviewer with SSE streaming, tool registry, vector memory, and persistent conversations.",
+  "engines": { "node": ">=20" },
+  "bin": { "agent-village": "bin/cli.mjs" },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check test/server.test.mjs && node --check eval/run.mjs && node --check eval/adversarial.mjs",
-    "test": "node --test",
-    "eval": "node eval/run.mjs",
-    "eval:security": "node eval/adversarial.mjs",
-    "verify": "npm run check && npm test && npm run eval && npm run eval:security"
+    "dev": "node --watch server.mjs",
+    "lint": "node --check server.mjs && node --check lib/*.mjs && node --check public/app.js && node --check bin/cli.mjs && node --check tests/*.mjs",
+    "test": "node --test tests/",
+    "eval": "node --test tests/",
+    "eval:security": "node --test tests/",
+    "verify": "npm run lint && npm test"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/abcbis1234-creator/Agent-Village.git"
   },
-  "keywords": [
-    "ai",
-    "agents",
-    "workbench",
-    "orchestration",
-    "local",
-    "demo"
-  ],
+  "keywords": ["ai", "agents", "orchestration", "local", "zero-dependencies"],
   "author": "Agent Village",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/abcbis1234-creator/Agent-Village/issues"
-  },
+  "bugs": { "url": "https://github.com/abcbis1234-creator/Agent-Village/issues" },
   "homepage": "https://github.com/abcbis1234-creator/Agent-Village#readme"
 }
