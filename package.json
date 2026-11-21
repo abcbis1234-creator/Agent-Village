@@ -11,9 +11,9 @@
     "dev": "node --watch server.mjs",
     "lint": "node --check server.mjs && node --check lib/*.mjs && node --check public/app.js && node --check bin/cli.mjs && node --check tests/*.mjs",
     "test": "node --test tests/",
-    "eval": "node --test tests/",
-    "eval:security": "node --test tests/",
-    "verify": "npm run lint && npm test"
+    "eval": "node eval/run.mjs",
+    "eval:security": "node eval/adversarial.mjs",
+    "verify": "npm run lint && npm test && npm run eval && npm run eval:security"
   },
   "repository": {
     "type": "git",

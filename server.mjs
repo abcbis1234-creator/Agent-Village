@@ -13,9 +13,10 @@ import { VectorMemory } from './lib/memory.mjs';
 import { ApprovalQueue } from './lib/policy.mjs';
 import { probeAllProviders, listProviders, defaultProvider, chatStream } from './lib/llm.mjs';
 import { signExport } from './lib/signature.mjs';
-import { Archivist } from './lib/memory-v2.mjs';
-import { SecurityReviewer } from './lib/security-v2.mjs';
-import { tier2RoleList } from './lib/roles-v2.mjs';
+import { Archivist } from './lib/archivist.mjs';
+import { securityReviewer } from './lib/security_reviewer.mjs';
+import { route as routeRequest } from './lib/routing/free-first.mjs';
+import { exportTraces, traceStats } from './lib/training/trace-export.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -131,7 +132,7 @@ export function createApp({ store, metrics } = {}) {
   const _aborts = new Map();
   const _mediaApprovals = new Map();
   const _archivist = new Archivist(_store);
-  const _security = new SecurityReviewer({ store: _store, provider: defaultProvider() });
+  const _security = securityReviewer;
   const ctx = { store: _store, metrics: _metrics, memory: _memory, policy: _policy, aborts: _aborts, mediaApprovals: _mediaApprovals, archivist: _archivist, security: _security };
 
   const server = createServer(async (req, res) => {
@@ -193,7 +194,7 @@ async function route(req, res, url, ctx) {
   if (parts.length === 2 && parts[1] === 'agents' && method === 'GET') {
     sendJson(res, 200, { agents: Object.values(AGENTS).map((a) => ({
       id: a.id, name: a.name, emoji: a.emoji, color: a.color, role: a.role, tier: a.tier ?? 1,
-    })), tier2: tier2RoleList() });
+    })) });
     return true;
   }
   if (parts.length === 2 && parts[1] === 'agent-contract' && method === 'GET') {
@@ -344,6 +345,28 @@ async function route(req, res, url, ctx) {
     sendJson(res, 201, m); return true;
   }
 
+  /* --- training trace export --- */
+  if (parts.length === 2 && parts[1] === 'training' && parts[2] === 'export' && method === 'GET') {
+    const jsonl = await exportTraces(ctx.store, {
+      user,
+      limit: Number(url.searchParams.get('limit') ?? 100),
+      minQuality: Number(url.searchParams.get('minQuality') ?? 0),
+      sinceMs: url.searchParams.get('sinceMs') ? Number(url.searchParams.get('sinceMs')) : 0,
+      capability: url.searchParams.get('capability') || null,
+    });
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'application/x-ndjson',
+      'Content-Disposition': 'attachment; filename="traces.jsonl"',
+    });
+    res.end(jsonl);
+    return true;
+  }
+  if (parts.length === 2 && parts[1] === 'training' && parts[2] === 'stats' && method === 'GET') {
+    const stats = await traceStats(ctx.store, { user, sinceMs: url.searchParams.get('sinceMs') ? Number(url.searchParams.get('sinceMs')) : 0 });
+    sendJson(res, 200, stats); return true;
+  }
+
   /* --- Tier 2: Archivist memory --- */
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'retrieve' && method === 'GET') {
     const q = url.searchParams.get('q') ?? '';
@@ -365,12 +388,22 @@ async function route(req, res, url, ctx) {
   }
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'reflect' && method === 'POST') {
     const provider = defaultProvider();
-    const result = await ctx.archivist.reflect({ user, llm: { chatStream }, provider });
-    sendJson(res, 200, result); return true;
+    try {
+      const result = await ctx.archivist.reflect({ user, llm: { chatStream }, provider });
+      sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 200, { skipped: true, reason: err.message });
+    }
+    return true;
   }
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'dream' && method === 'POST') {
-    const result = await ctx.archivist.dreamCycle({ user });
-    sendJson(res, 200, result); return true;
+    try {
+      const result = await ctx.archivist.dreamCycle({ user });
+      sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 400, { error: err.message || 'dream cycle failed' });
+    }
+    return true;
   }
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'stats' && method === 'GET') {
     sendJson(res, 200, ctx.archivist.stats()); return true;
@@ -385,7 +418,7 @@ async function route(req, res, url, ctx) {
   if (parts.length === 3 && parts[1] === 'security' && parts[2] === 'capability' && method === 'POST') {
     const body = await readJson(req);
     if (!body.tool || typeof body.tool !== 'string') { sendJson(res, 422, { error: 'tool required' }); return true; }
-    const token = ctx.security.mintCapability({ tool: body.tool, scope: body.scope === 'reusable' ? 'reusable' : 'once', ttlMs: Number.isFinite(body.ttlMs) ? body.ttlMs : 60_000 });
+    const token = ctx.security.mintCapability({ tool: body.tool, scope: body.scope === 'reusable' ? 'reusable' : 'once', ttlMs: Number.isFinite(body.ttlMs) ? body.ttlMs : 60_000, user });
     sendJson(res, 201, { token, tool: body.tool, scope: body.scope === 'reusable' ? 'reusable' : 'once' });
     return true;
   }
@@ -472,6 +505,8 @@ async function handleChat(req, res, conversationId, ctx, user) {
       memory: ctx.memory,
       policy: ctx.policy,
       archivist: ctx.archivist,
+      security: ctx.security,
+      capabilities: body.capabilities ?? {},
       conversationId,
       runId: run.id,
       signal: ac.signal,
@@ -525,7 +560,7 @@ async function handleRun(req, res, ctx, user) {
     emit('run_id', { runId: run.id });
     try {
       for await (const evt of orchestrate({
-        message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist,
+        message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist, security: ctx.security, capabilities: body.capabilities ?? {},
         conversationId: conversation.id, runId: run.id, signal: ac.signal, onEvent: () => {},
       })) {
         emit(evt.type, evt);
@@ -551,7 +586,7 @@ async function handleRun(req, res, ctx, user) {
   let finalText = '';
   try {
     for await (const evt of orchestrate({
-      message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist,
+      message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist, security: ctx.security, capabilities: body.capabilities ?? {},
       conversationId: conversation.id, runId: run.id, signal: ac.signal, onEvent: () => {},
     })) {
       if (evt.type === 'message_end') finalText = evt.content;
