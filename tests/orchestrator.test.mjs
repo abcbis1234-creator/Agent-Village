@@ -60,11 +60,9 @@ test('scout phase runs before planner', async () => {
   const store = await freshStore();
   const events = await collect({ message: 'Plan a trip to Tokyo', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
   const types = events.map((e) => e.type);
-  assert.ok(types.includes('phase'));
   const phases = events.filter((e) => e.type === 'phase').map((e) => e.phase);
   assert.ok(phases.includes('scout'));
   assert.ok(phases.includes('plan'));
-  // Scout must come before plan
   const scoutIdx = phases.indexOf('scout');
   const planIdx = phases.indexOf('plan');
   assert.ok(scoutIdx < planIdx);
@@ -90,6 +88,26 @@ test('synthesizer phase runs after verifier', async () => {
   assert.ok(synthIdx > verifyIdx);
 });
 
+test('critic phase runs after synthesizer', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'what is 2+2?', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('critic_result'));
+  const criticIdx = types.indexOf('critic_result');
+  const synthIdx = types.indexOf('synthesize_result');
+  assert.ok(criticIdx > synthIdx);
+});
+
+test('archivist writes memory after reviewer', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'hello', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('archive_written'));
+  const archiveIdx = types.indexOf('archive_written');
+  const reviewIdx = types.indexOf('message_end');
+  assert.ok(archiveIdx > reviewIdx);
+});
+
 test('scout result contains facts and ambiguities', async () => {
   const store = await freshStore();
   const events = await collect({ message: 'Plan a complex multi-city tour', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
@@ -106,4 +124,13 @@ test('verify result contains pass/fail checks', async () => {
   assert.ok(verifyEvents.length >= 1);
   assert.ok('passed' in verifyEvents[0]);
   assert.ok(Array.isArray(verifyEvents[0].checks));
+});
+
+test('critic result contains issues and overall assessment', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'what is 2+2?', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const criticEvents = events.filter((e) => e.type === 'critic_result');
+  assert.ok(criticEvents.length >= 1);
+  assert.ok('overall' in criticEvents[0]);
+  assert.ok(Array.isArray(criticEvents[0].issues));
 });

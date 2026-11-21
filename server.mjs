@@ -11,8 +11,11 @@ import { orchestrate } from './lib/orchestrator.mjs';
 import { createMetrics } from './lib/metrics.mjs';
 import { VectorMemory } from './lib/memory.mjs';
 import { ApprovalQueue } from './lib/policy.mjs';
-import { probeAllProviders, listProviders, defaultProvider } from './lib/llm.mjs';
+import { probeAllProviders, listProviders, defaultProvider, chatStream } from './lib/llm.mjs';
 import { signExport } from './lib/signature.mjs';
+import { Archivist } from './lib/memory-v2.mjs';
+import { SecurityReviewer } from './lib/security-v2.mjs';
+import { tier2RoleList } from './lib/roles-v2.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -127,7 +130,9 @@ export function createApp({ store, metrics } = {}) {
   const _policy = new ApprovalQueue();
   const _aborts = new Map();
   const _mediaApprovals = new Map();
-  const ctx = { store: _store, metrics: _metrics, memory: _memory, policy: _policy, aborts: _aborts, mediaApprovals: _mediaApprovals };
+  const _archivist = new Archivist(_store);
+  const _security = new SecurityReviewer({ store: _store, provider: defaultProvider() });
+  const ctx = { store: _store, metrics: _metrics, memory: _memory, policy: _policy, aborts: _aborts, mediaApprovals: _mediaApprovals, archivist: _archivist, security: _security };
 
   const server = createServer(async (req, res) => {
     const head = req.method === 'HEAD';
@@ -187,8 +192,8 @@ async function route(req, res, url, ctx) {
   /* --- agents --- */
   if (parts.length === 2 && parts[1] === 'agents' && method === 'GET') {
     sendJson(res, 200, { agents: Object.values(AGENTS).map((a) => ({
-      id: a.id, name: a.name, emoji: a.emoji, color: a.color, role: a.role,
-    })) });
+      id: a.id, name: a.name, emoji: a.emoji, color: a.color, role: a.role, tier: a.tier ?? 1,
+    })), tier2: tier2RoleList() });
     return true;
   }
   if (parts.length === 2 && parts[1] === 'agent-contract' && method === 'GET') {
@@ -200,6 +205,7 @@ async function route(req, res, url, ctx) {
         capabilities: 'GET /api/capabilities',
         providers: 'GET /api/providers',
         providers_health: 'GET /api/providers/health',
+        agents: 'GET /api/agents',
         run: 'POST /api/run',
         run_stream: 'POST /api/conversations/:id/chat',
         cancel: 'POST /api/runs/:id/cancel',
@@ -212,6 +218,12 @@ async function route(req, res, url, ctx) {
         media_approve: 'POST /api/media/approve',
         feedback: 'GET/POST /api/feedback',
         knowledge: 'GET/POST /api/knowledge',
+        memory_retrieve: 'GET /api/memory/retrieve?q=',
+        memory_reflect: 'POST /api/memory/reflect',
+        memory_dream: 'POST /api/memory/dream',
+        memory_stats: 'GET /api/memory/stats',
+        security_audit: 'GET /api/security/audit',
+        security_capability: 'POST /api/security/capability',
       },
       run_input: { mission: 'string, max 1200 chars', capability: 'optional capability key or auto', rounds: 'optional integer 1-3' },
       return_shape: ['capability', 'deliverable', 'verdict'],
@@ -332,6 +344,52 @@ async function route(req, res, url, ctx) {
     sendJson(res, 201, m); return true;
   }
 
+  /* --- Tier 2: Archivist memory --- */
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'retrieve' && method === 'GET') {
+    const q = url.searchParams.get('q') ?? '';
+    const k = Number(url.searchParams.get('k') ?? 6);
+    const results = ctx.archivist.retrieve(q, { user, k: Number.isFinite(k) ? k : 6 });
+    sendJson(res, 200, {
+      results: results.map((r) => ({
+        id: r.memory.id,
+        type: r.memory.type,
+        text: r.memory.text,
+        score: Number(r.score.toFixed(3)),
+        relevance: Number(r.relevance.toFixed(3)),
+        recency: Number(r.recency.toFixed(3)),
+        importance: r.memory.importance,
+        provenance: r.memory.provenance ?? [],
+      })),
+    });
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'reflect' && method === 'POST') {
+    const provider = defaultProvider();
+    const result = await ctx.archivist.reflect({ user, llm: { chatStream }, provider });
+    sendJson(res, 200, result); return true;
+  }
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'dream' && method === 'POST') {
+    const result = await ctx.archivist.dreamCycle({ user });
+    sendJson(res, 200, result); return true;
+  }
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'stats' && method === 'GET') {
+    sendJson(res, 200, ctx.archivist.stats()); return true;
+  }
+
+  /* --- Tier 2: Security audit + capability tokens --- */
+  if (parts.length === 3 && parts[1] === 'security' && parts[2] === 'audit' && method === 'GET') {
+    const limit = Number(url.searchParams.get('limit') ?? 100);
+    sendJson(res, 200, { records: ctx.store.listAudit({ limit: Number.isFinite(limit) ? limit : 100 }) });
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'security' && parts[2] === 'capability' && method === 'POST') {
+    const body = await readJson(req);
+    if (!body.tool || typeof body.tool !== 'string') { sendJson(res, 422, { error: 'tool required' }); return true; }
+    const token = ctx.security.mintCapability({ tool: body.tool, scope: body.scope === 'reusable' ? 'reusable' : 'once', ttlMs: Number.isFinite(body.ttlMs) ? body.ttlMs : 60_000 });
+    sendJson(res, 201, { token, tool: body.tool, scope: body.scope === 'reusable' ? 'reusable' : 'once' });
+    return true;
+  }
+
   /* --- media (Stable Diffusion, approval-gated) --- */
   if (parts.length === 3 && parts[1] === 'media' && parts[2] === 'generate' && method === 'POST') {
     const body = await readJson(req);
@@ -413,6 +471,7 @@ async function handleChat(req, res, conversationId, ctx, user) {
       store: ctx.store,
       memory: ctx.memory,
       policy: ctx.policy,
+      archivist: ctx.archivist,
       conversationId,
       runId: run.id,
       signal: ac.signal,
@@ -466,7 +525,7 @@ async function handleRun(req, res, ctx, user) {
     emit('run_id', { runId: run.id });
     try {
       for await (const evt of orchestrate({
-        message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy,
+        message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist,
         conversationId: conversation.id, runId: run.id, signal: ac.signal, onEvent: () => {},
       })) {
         emit(evt.type, evt);
@@ -492,7 +551,7 @@ async function handleRun(req, res, ctx, user) {
   let finalText = '';
   try {
     for await (const evt of orchestrate({
-      message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy,
+      message: mission, provider, user, store: ctx.store, memory: ctx.memory, policy: ctx.policy, archivist: ctx.archivist,
       conversationId: conversation.id, runId: run.id, signal: ac.signal, onEvent: () => {},
     })) {
       if (evt.type === 'message_end') finalText = evt.content;
