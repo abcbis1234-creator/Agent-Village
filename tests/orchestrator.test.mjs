@@ -55,3 +55,55 @@ test('plain question triggers no tools', async () => {
   const calls = events.filter((e) => e.type === 'tool_call');
   assert.equal(calls.length, 0);
 });
+
+test('scout phase runs before planner', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'Plan a trip to Tokyo', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('phase'));
+  const phases = events.filter((e) => e.type === 'phase').map((e) => e.phase);
+  assert.ok(phases.includes('scout'));
+  assert.ok(phases.includes('plan'));
+  // Scout must come before plan
+  const scoutIdx = phases.indexOf('scout');
+  const planIdx = phases.indexOf('plan');
+  assert.ok(scoutIdx < planIdx);
+});
+
+test('verifier phase runs after builder', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'what is 6*7?', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('verify_result'));
+  const verifyIdx = types.indexOf('verify_result');
+  const toolResultIdx = types.indexOf('tool_result');
+  assert.ok(verifyIdx > toolResultIdx);
+});
+
+test('synthesizer phase runs after verifier', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'what time is it?', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('synthesize_result'));
+  const synthIdx = types.indexOf('synthesize_result');
+  const verifyIdx = types.indexOf('verify_result');
+  assert.ok(synthIdx > verifyIdx);
+});
+
+test('scout result contains facts and ambiguities', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'Plan a complex multi-city tour', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const scoutEvents = events.filter((e) => e.type === 'scout_result');
+  assert.ok(scoutEvents.length >= 1);
+  assert.ok(Array.isArray(scoutEvents[0].facts));
+  assert.ok(Array.isArray(scoutEvents[0].ambiguities));
+});
+
+test('verify result contains pass/fail checks', async () => {
+  const store = await freshStore();
+  const events = await collect({ message: 'what is 2+2?', store, user: 'u', conversationId: 'conv-1', runId: 'run-1' });
+  const verifyEvents = events.filter((e) => e.type === 'verify_result');
+  assert.ok(verifyEvents.length >= 1);
+  assert.ok('passed' in verifyEvents[0]);
+  assert.ok(Array.isArray(verifyEvents[0].checks));
+});

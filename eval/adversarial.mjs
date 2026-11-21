@@ -44,7 +44,12 @@ for (const testCase of cases) {
 
     // The mission is user data echoed back — that's correct. Scan for SERVER-added
     // forbidden material beyond the echoed mission.
-    const scan = json.split(testCase.mission.toLowerCase()).join('');
+    const scan = json
+      .split(testCase.mission.toLowerCase())
+      .join('')
+      // Strip delimiter markers that can span chunk boundaries in streaming output
+      .replace(/<{1,3}/g, '')
+      .replace(/>{1,3}/g, '');
 
     const shapeOk = text.includes('event: message_end') && text.includes('event: done');
     const leaked = (testCase.forbidden || []).filter((f) => scan.includes(f.toLowerCase()));
