@@ -23,6 +23,15 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 | Cross-cutting | 📚 Archivist | Memory: recall/reflect/consolidate |
 | Cross-cutting | 🔒 Security Reviewer | Deterministic L1 tool gate |
 
+## Reliability & safety upgrades
+
+- **JSON repair** (`lib/json.mjs`) — parser-driven extraction with depth/length limits and prototype-pollution guards. Planner, Scout, and Critic no longer depend on a greedy regex.
+- **Provider circuit breakers** (`lib/llm.mjs`) — per-provider rolling failure window, half-open probes, and a failover chain for planning. `GET /api/providers/health` now reports breaker state.
+- **Context-scoped security** (`lib/security.mjs`) — injection rules run only in contexts where they apply (`user_input`, `tool_result`, `document`); tool outputs are quarantined before reaching the model; shell metacharacters are checked only on declared dangerous args; every decision is persisted to the signed audit log.
+- **Memory-write guard** (`lib/archivist.mjs`) — secrets and invisible-unicode payloads never enter durable memory; corrections supersede instead of overwriting.
+
+`npm test` covers the new JSON, resilience, security, and Archivist behavior.
+
 ## API
 
 - `GET /api/health` — `{ ok: true }`

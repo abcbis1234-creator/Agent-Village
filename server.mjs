@@ -10,7 +10,7 @@ import { orchestrate } from './lib/orchestrator.mjs';
 import { createMetrics } from './lib/metrics.mjs';
 import { VectorMemory } from './lib/memory.mjs';
 import { Archivist } from './lib/archivist.mjs';
-import { probeAllProviders, listProviders, defaultProvider } from './lib/llm.mjs';
+import { probeAllProviders, listProviders, defaultProvider, providerHealth } from './lib/llm.mjs';
 import { signExport } from './lib/signature.mjs';
 import { SecurityReviewer } from './lib/security.mjs';
 
@@ -138,7 +138,7 @@ async function route(req, res, url, ctx) {
   if (parts.length === 2 && parts[1] === 'health' && method === 'GET') { sendJson(res, 200, { ok: true }); return true; }
   if (parts.length === 2 && parts[1] === 'metrics' && method === 'GET') { sendJson(res, 200, ctx.metrics.snapshot()); return true; }
   if (parts.length === 2 && parts[1] === 'providers' && method === 'GET') { sendJson(res, 200, { providers: listProviders(), default: defaultProvider() }); return true; }
-  if (parts.length === 3 && parts[1] === 'providers' && parts[2] === 'health' && method === 'GET') { sendJson(res, 200, await probeAllProviders()); return true; }
+  if (parts.length === 3 && parts[1] === 'providers' && parts[2] === 'health' && method === 'GET') { sendJson(res, 200, { ...(await probeAllProviders()), breakers: providerHealth() }); return true; }
   if (parts.length === 2 && parts[1] === 'agents' && method === 'GET') { sendJson(res, 200, { agents: publicAgents() }); return true; }
 
   if (parts.length === 2 && parts[1] === 'conversations') {

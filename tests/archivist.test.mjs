@@ -28,3 +28,20 @@ test('consolidation promotes', async () => {
   const r = await a.consolidate();
   assert.ok(r.promoted >= 1);
 });
+
+test('refuses to store secrets', async () => {
+  const a = new Archivist(fakeStore());
+  await assert.rejects(
+    () => a.record({ text: 'my api_key: sk-abcdefghijklmnopqrst' }),
+    /unsafe/i,
+  );
+});
+
+test('correction supersedes instead of overwriting', async () => {
+  const store = fakeStore();
+  const a = new Archivist(store);
+  const m = await a.record({ text: 'the vault is under the oak tree', importance: 3 });
+  const corrected = await a.correct(m.id, { correction: 'the vault moved to the library' });
+  assert.notEqual(corrected.id, m.id);
+  assert.equal(m.supersededBy, 'corrected');
+});
