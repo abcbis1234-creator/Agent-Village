@@ -5,6 +5,8 @@ const els = {
   composer: $('composer'), input: $('message'), status: $('status'),
   title: $('conv-title'), phase: $('phase'), newBtn: $('new-conv'),
   palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
+  townStats: $('town-stats'), godButtons: $('god-buttons'), tick: $('tick'),
+  wantForm: $('want-form'), wantInput: $('want-input'), wants: $('wants'),
 };
 const setStatus = (t) => (els.status.textContent = t ?? '');
 
@@ -66,6 +68,78 @@ function scrollBottom() { els.transcript.scrollTop = els.transcript.scrollHeight
 
 async function loadAgents() { const { agents } = await api('/api/agents'); state.agents = Object.fromEntries(agents.map((a) => [a.id, a])); renderAgents(); }
 async function loadConversations() { const { conversations } = await api('/api/conversations'); state.conversations = conversations; renderConversations(); }
+
+/* ---------- town ---------- */
+
+async function loadTown() {
+  try {
+    const [stats, wants] = await Promise.all([
+      api('/api/town/stats'),
+      api('/api/wants?status=open'),
+    ]);
+    if (els.townStats) {
+      els.townStats.textContent = `${stats.agents} agents · ${stats.wants.open} open wants · ${stats.worldEvents} events · ${stats.runs} runs`;
+    }
+    renderWants(wants.wants ?? []);
+  } catch { /* the town panel is optional */ }
+}
+
+function renderWants(wants) {
+  if (!els.wants) return;
+  els.wants.replaceChildren();
+  if (!wants.length) {
+    const li = document.createElement('li');
+    li.className = 'want-empty';
+    li.textContent = 'No open wants.';
+    els.wants.append(li);
+    return;
+  }
+  for (const w of wants) {
+    const li = document.createElement('li');
+    li.className = 'want';
+    const text = document.createElement('span');
+    text.className = 'want-text';
+    text.textContent = w.text;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'want-btn';
+    btn.textContent = w.status === 'open' ? 'Claim' : w.status === 'claimed' ? 'Fulfill' : w.status;
+    btn.addEventListener('click', async () => {
+      try {
+        if (w.status === 'open') {
+          await api(`/api/wants/${w.id}/claim`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        } else if (w.status === 'claimed') {
+          await api(`/api/wants/${w.id}/fulfill`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ result: 'done' }) });
+        }
+        await loadTown();
+      } catch (e) { setStatus(e.message); }
+    });
+    li.append(text, btn);
+    els.wants.append(li);
+  }
+}
+
+async function godMode(action) {
+  try {
+    await api('/api/godmode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, magnitude: 2 }) });
+    await loadTown();
+  } catch (e) { setStatus(e.message); }
+}
+
+async function postWant(text) {
+  try {
+    await api('/api/wants', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    await loadTown();
+  } catch (e) { setStatus(e.message); }
+}
+
+async function tick() {
+  try {
+    const r = await api('/api/town/tick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    setStatus(`tick ${r.tick}: ${r.events.length} notices`);
+    await loadTown();
+  } catch (e) { setStatus(e.message); }
+}
 
 async function newConversation() {
   const c = await api('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: 'planner' }) });
@@ -155,6 +229,18 @@ async function sendMessage(message) {
         els.transcript.append(chip({ icon: v.overall === 'reject' ? '⚖️' : '✓', label: `critic: ${v.overall} (${v.calibrated})`, detail: v.findings.map((f) => f.finding ?? (f.gaps?.join(', ')) ?? f.counterCase).filter(Boolean).join(' · ') || 'no findings' }));
         scrollBottom();
       }
+      else if (event === 'revision_requested') {
+        els.transcript.append(chip({ icon: '🔁', label: 'critic requested a revision', detail: (data.findings ?? []).map((f) => f.finding ?? f.gaps?.join(', ') ?? f.counterCase).filter(Boolean).join(' · ') || data.summary || '' }));
+        scrollBottom();
+      }
+      else if (event === 'archive_written') {
+        els.transcript.append(chip({ icon: '🗂️', label: 'memory saved', detail: `id ${String(data.memoryId ?? '').slice(0, 8)}` }));
+        scrollBottom();
+      }
+      else if (event === 'tool_denied') {
+        els.transcript.append(chip({ icon: '⛔', label: `${data.tool} denied`, detail: (data.reasons ?? []).join('; ') }));
+        scrollBottom();
+      }
       else if (event === 'budget') { els.transcript.append(chip({ icon: '💾', label: 'budget', detail: `tokens: ${data.snapshot.used.tokens}, tools: ${data.snapshot.used.toolCalls}, ${data.snapshot.elapsedMs}ms` })); }
       else if (event === 'error') { els.transcript.append(bubble({ role: 'agent', agentId: 'system', content: `Error (${data.where ?? 'run'}): ${data.message}` })); }
     }
@@ -187,6 +273,18 @@ els.composer.addEventListener('submit', (e) => {
   els.input.value = ''; setStatus(''); sendMessage(message);
 });
 els.newBtn.addEventListener('click', () => newConversation().catch((e) => setStatus(e.message)));
+els.godButtons?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (btn) godMode(btn.dataset.action);
+});
+els.tick?.addEventListener('click', tick);
+els.wantForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = els.wantInput.value.trim();
+  if (!text) return;
+  els.wantInput.value = '';
+  postWant(text);
+});
 els.paletteInput.addEventListener('input', (e) => renderPaletteList(e.target.value));
 els.palette.addEventListener('click', (e) => { if (e.target === els.palette) closePalette(); });
 document.addEventListener('keydown', (e) => {
@@ -196,7 +294,7 @@ document.addEventListener('keydown', (e) => {
 
 (async function boot() {
   try {
-    await loadAgents(); await loadConversations();
+    await loadAgents(); await loadConversations(); await loadTown();
     if (state.conversations.length > 0) await openConversation(state.conversations[0].id);
     else await newConversation();
   } catch (err) { setStatus(`Boot failed: ${err.message}`); }

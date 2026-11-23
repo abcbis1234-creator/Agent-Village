@@ -57,3 +57,38 @@ test('chat streams full pipeline', async () => {
     assert.match(text, /event: done/);
   } finally { server.close(); }
 });
+test('town: stats, wants, godmode, tick, chronicle', async () => {
+  const { server, base } = await start();
+  try {
+    const stats = await (await fetch(`${base}/api/town/stats`)).json();
+    assert.ok(stats.agents > 0);
+
+    const want = await (await fetch(`${base}/api/wants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'find a coffee shop' }),
+    })).json();
+    assert.ok(want.id);
+    assert.equal(want.status, 'open');
+
+    const claimed = await (await fetch(`${base}/api/wants/${want.id}/claim`, { method: 'POST' })).json();
+    assert.equal(claimed.status, 'claimed');
+
+    const fulfilled = await (await fetch(`${base}/api/wants/${want.id}/fulfill`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ result: 'done' }),
+    })).json();
+    assert.equal(fulfilled.status, 'fulfilled');
+
+    const god = await (await fetch(`${base}/api/godmode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'airdrop' }),
+    })).json();
+    assert.equal(god.action, 'airdrop');
+
+    const tick = await (await fetch(`${base}/api/town/tick`, { method: 'POST' })).json();
+    assert.ok(tick.tick >= 1);
+
+    const chronicle = await (await fetch(`${base}/api/chronicle`)).text();
+    assert.match(chronicle, /Agent Village Chronicle/);
+  } finally { server.close(); }
+});

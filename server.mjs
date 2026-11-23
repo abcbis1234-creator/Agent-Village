@@ -10,9 +10,13 @@ import { orchestrate } from './lib/orchestrator.mjs';
 import { createMetrics } from './lib/metrics.mjs';
 import { VectorMemory } from './lib/memory.mjs';
 import { Archivist } from './lib/archivist.mjs';
-import { probeAllProviders, listProviders, defaultProvider, providerHealth } from './lib/llm.mjs';
+import { probeAllProviders, listProviders, defaultProvider, providerHealth, chatStream, chatStreamWithFallback, providerChain } from './lib/llm.mjs';
 import { signExport } from './lib/signature.mjs';
 import { SecurityReviewer } from './lib/security.mjs';
+import { WantBoard } from './lib/wants.mjs';
+import { GodMode } from './lib/godmode.mjs';
+import { Chronicle } from './lib/chronicle.mjs';
+import { Town } from './lib/town.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -100,8 +104,12 @@ export function createApp({ store, metrics } = {}) {
   const _memory = new VectorMemory(_store);
   const _aborts = new Map();
   const _archivist = new Archivist(_store);
-  const _security = new SecurityReviewer({ store: _store });
-  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security };
+  const _security = new SecurityReviewer({ store: _store, provider: defaultProvider(), llm: { chatStream, chatStreamWithFallback, providerChain } });
+  const _wants = new WantBoard(_store);
+  const _god = new GodMode(_store);
+  const _chronicle = new Chronicle(_store);
+  const _town = new Town(_store);
+  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, wants: _wants, god: _god, chronicle: _chronicle, town: _town };
 
   const server = createServer(async (req, res) => {
     const head = req.method === 'HEAD';
@@ -191,6 +199,113 @@ async function route(req, res, url, ctx) {
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'consolidate' && method === 'POST') {
     const archivist = new Archivist(ctx.store);
     sendJson(res, 200, await archivist.consolidate({ user }));
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'reflect' && method === 'POST') {
+    const provider = defaultProvider();
+    try {
+      const result = await ctx.archivist.reflect({ user, llm: { chatStream, chatStreamWithFallback, providerChain }, provider });
+      sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 200, { skipped: true, reason: err.message });
+    }
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'stats' && method === 'GET') {
+    sendJson(res, 200, ctx.archivist.stats());
+    return true;
+  }
+
+  /* --- town: wants board --- */
+  if (parts.length === 2 && parts[1] === 'wants' && method === 'GET') {
+    const status = url.searchParams.get('status') ?? 'open';
+    sendJson(res, 200, { wants: ctx.wants.list({ status }) });
+    return true;
+  }
+  if (parts.length === 2 && parts[1] === 'wants' && method === 'POST') {
+    const body = await readJson(req);
+    try {
+      sendJson(res, 201, ctx.wants.post({ ...body, user }));
+    } catch (e) {
+      sendJson(res, 422, { error: e.message });
+    }
+    return true;
+  }
+  if (parts.length === 4 && parts[1] === 'wants' && parts[3] === 'claim' && method === 'POST') {
+    try {
+      sendJson(res, 200, ctx.wants.claim(parts[2], { by: 'citizen' }));
+    } catch (e) {
+      sendJson(res, 409, { error: e.message });
+    }
+    return true;
+  }
+  if (parts.length === 4 && parts[1] === 'wants' && parts[3] === 'fulfill' && method === 'POST') {
+    const body = await readJson(req);
+    try {
+      sendJson(res, 200, ctx.wants.fulfill(parts[2], { by: body.agent ?? 'citizen', result: body.result ?? '' }));
+    } catch (e) {
+      sendJson(res, 409, { error: e.message });
+    }
+    return true;
+  }
+  if (parts.length === 4 && parts[1] === 'wants' && parts[3] === 'cancel' && method === 'POST') {
+    try {
+      sendJson(res, 200, ctx.wants.cancel(parts[2], { user }));
+    } catch (e) {
+      sendJson(res, 409, { error: e.message });
+    }
+    return true;
+  }
+
+  /* --- town: god mode + world events --- */
+  if (parts.length === 2 && parts[1] === 'godmode' && method === 'POST') {
+    const body = await readJson(req);
+    try {
+      sendJson(res, 201, ctx.god.act({ ...body, user }));
+    } catch (e) {
+      sendJson(res, 422, { error: e.message });
+    }
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'world' && parts[2] === 'events' && method === 'GET') {
+    sendJson(res, 200, { events: ctx.god.list({ limit: 100 }) });
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'world' && parts[2] === 'stream' && method === 'GET') {
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    let last = 0;
+    const flush = () => {
+      for (const e of ctx.store.data.world ?? []) {
+        if (e.ts > last) {
+          try { res.write(`event: world_event\ndata: ${JSON.stringify(e)}\n\n`); } catch { return; }
+          last = e.ts;
+        }
+      }
+    };
+    flush();
+    const timer = setInterval(flush, 2000);
+    req.on('close', () => clearInterval(timer));
+    return true;
+  }
+
+  /* --- town: chronicle, stats, tick --- */
+  if (parts.length === 2 && parts[1] === 'chronicle' && method === 'GET') {
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' });
+    res.end(ctx.chronicle.build({ user }));
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'town' && parts[2] === 'stats' && method === 'GET') {
+    sendJson(res, 200, ctx.town.stats());
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'town' && parts[2] === 'tick' && method === 'POST') {
+    sendJson(res, 200, ctx.town.tick({ user }));
     return true;
   }
 

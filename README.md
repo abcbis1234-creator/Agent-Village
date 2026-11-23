@@ -44,12 +44,28 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 - `POST /api/runs/:id/cancel`
 - `GET /api/runs/:id/events` / `GET /api/runs/:id/export`
 - `GET /api/memory/retrieve?q=...`
-- `POST /api/memory/consolidate`
+- `POST /api/memory/consolidate` — decay / promote / merge
+- `POST /api/memory/reflect` — synthesize episodic → semantic beliefs
+- `GET /api/memory/stats`
 - `GET/POST /api/knowledge` / `POST /api/feedback`
+
+### Town (OpenWants + Emergent City mechanics)
+
+- `GET /api/wants?status=open` — the shared wants board
+- `POST /api/wants` — publish a want (`{ text, author?, tags?, reward? }`)
+- `POST /api/wants/:id/claim` — claim an open want
+- `POST /api/wants/:id/fulfill` — fulfill a claimed want (`{ result? }`)
+- `POST /api/wants/:id/cancel` — cancel your own want
+- `POST /api/godmode` — god-mode action (`{ action, target?, magnitude? }`)
+- `GET /api/world/events` — recent world events
+- `GET /api/world/stream` — live SSE world-event stream
+- `GET /api/chronicle` — Markdown town newspaper
+- `GET /api/town/stats` — agents / wants / events / runs / memories
+- `POST /api/town/tick` — advance one deterministic simulation tick
 
 ## SSE events
 
-`start` · `phase` · `memory_packet` · `scout_report` · `planner_raw` · `security_decision` · `tool_result` · `tool_error` · `verification` · `brief` · `message_start` · `chunk` · `message_end` · `critique` · `budget` · `done`
+`start` · `phase` · `memory_packet` · `scout_report` · `planner_raw` · `security_decision` · `tool_call` · `tool_result` · `tool_error` · `tool_denied` · `verification` · `brief` · `message_start` · `chunk` · `message_end` · `critique` · `revision_requested` · `archive_written` · `budget` · `done`
 
 ## Scripts
 

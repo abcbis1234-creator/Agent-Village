@@ -18,6 +18,26 @@
       <ul id="conversations" class="conversations"></ul>
       <h2>Agents</h2>
       <ul id="agents" class="agents"></ul>
+
+      <h2>Town</h2>
+      <div id="town-stats" class="town-stats">loading…</div>
+      <div id="god-buttons" class="god-buttons">
+        <button type="button" data-action="airdrop">🪂 Airdrop</button>
+        <button type="button" data-action="smite">⚡ Smite</button>
+        <button type="button" data-action="weather">🌧 Weather</button>
+        <button type="button" data-action="blackout">🔌 Blackout</button>
+        <button type="button" data-action="rumor">🗣 Rumor</button>
+        <button type="button" data-action="festival">🎉 Festival</button>
+      </div>
+      <button id="tick" class="tick-btn" type="button">▶ Run a tick</button>
+      <a class="chronicle-link" href="/api/chronicle" target="_blank" rel="noopener">📰 Open chronicle</a>
+
+      <h2>Wants</h2>
+      <form id="want-form" class="want-form">
+        <input id="want-input" placeholder="Post a want…" maxlength="200" />
+        <button type="submit">Post</button>
+      </form>
+      <ul id="wants" class="wants"></ul>
     </aside>
     <main class="main">
       <header class="topbar">
