@@ -92,3 +92,45 @@ test('town: stats, wants, godmode, tick, chronicle', async () => {
     assert.match(chronicle, /Agent Village Chronicle/);
   } finally { server.close(); }
 });
+
+test('graceful drain: aborts tracked runs, flushes, and rejects new chats with 503', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'av-'));
+  const store = new Store(join(dir, 'state.json'));
+  await store.load();
+  const { server, ctx } = createApp({ store });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
+
+  try {
+    // A tracked run controller should be aborted by beginDrain.
+    const ac = new AbortController();
+    ctx.aborts.set('run-x', ac);
+    assert.equal(ac.signal.aborted, false);
+
+    const drainPromise = ctx.beginDrain();
+    assert.equal(ctx.draining, true);
+    assert.equal(ac.signal.aborted, true, 'beginDrain aborts tracked runs');
+    await drainPromise; // store flush resolves
+
+    // While draining, a new chat POST is rejected with 503 + Retry-After.
+    const conv = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    const res = await fetch(`${base}/api/conversations/${conv.id}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'hi', provider: 'mock' }) });
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('retry-after'), '5');
+  } finally { server.close(); }
+});
+
+test('drain flush persists queued writes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'av-'));
+  const store = new Store(join(dir, 'state.json'));
+  await store.load();
+  // Queue several writes without awaiting, then flush.
+  const writes = [];
+  for (let i = 0; i < 5; i++) { store.data.wants.push({ id: `w${i}` }); writes.push(store.save()); }
+  await Promise.all(writes);
+  await store.flush();
+  const s2 = new Store(join(dir, 'state.json'));
+  await s2.load();
+  assert.equal(s2.data.wants.length, 5);
+});

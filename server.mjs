@@ -109,7 +109,16 @@ export function createApp({ store, metrics } = {}) {
   const _god = new GodMode(_store);
   const _chronicle = new Chronicle(_store);
   const _town = new Town(_store);
-  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, wants: _wants, god: _god, chronicle: _chronicle, town: _town };
+  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, wants: _wants, god: _god, chronicle: _chronicle, town: _town, draining: false };
+
+  // Graceful drain (#4): stop accepting new runs, abort in-flight runs (their
+  // SSE handlers emit 'cancelled'/'interrupted' and close), then flush the
+  // store. Returns a promise that resolves once all active runs have aborted.
+  ctx.beginDrain = () => {
+    ctx.draining = true;
+    for (const ac of _aborts.values()) { try { ac.abort(); } catch { /* already gone */ } }
+    return _store.flush?.() ?? Promise.resolve();
+  };
 
   const server = createServer(async (req, res) => {
     const head = req.method === 'HEAD';
@@ -118,6 +127,11 @@ export function createApp({ store, metrics } = {}) {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const ip = req.socket.remoteAddress ?? 'unknown';
+      // While draining, refuse new run-creating requests with 503 + Retry-After.
+      if (ctx.draining && req.method === 'POST' && /^\/api\/(conversations\/[^/]+\/chat|godmode|town\/tick)$/.test(url.pathname)) {
+        res.setHeader('Retry-After', '5');
+        return sendJson(res, 503, { error: 'server is draining; retry later' }, head);
+      }
       if (url.pathname.startsWith('/api/') && rateLimited(ip)) return sendJson(res, 429, { error: 'Too Many Requests' }, head);
       if (url.pathname.startsWith('/api/') && !checkToken(req, url)) return sendJson(res, 401, { error: 'Unauthorized' }, head);
       const handled = await route(req, res, url, ctx);
@@ -369,7 +383,13 @@ async function handleChat(req, res, conversationId, ctx, user) {
     }
     await ctx.store.finishRun(run.id, { status: 'ok' });
   } catch (err) {
-    if (err.name === 'AbortError') { await ctx.store.finishRun(run.id, { status: 'cancelled' }); emit('cancelled', { runId: run.id }); }
+    if (err.name === 'AbortError') {
+      // Distinguish a user cancel from a drain-triggered abort so run history
+      // reflects why the run stopped.
+      const status = ctx.draining ? 'interrupted' : 'cancelled';
+      await ctx.store.finishRun(run.id, { status });
+      emit(status === 'interrupted' ? 'interrupted' : 'cancelled', { runId: run.id, status });
+    }
     else { console.error('[chat]', err); await ctx.store.finishRun(run.id, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
   } finally {
     ctx.aborts.delete(run.id);
@@ -379,10 +399,26 @@ async function handleChat(req, res, conversationId, ctx, user) {
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const { server, store } = createApp();
+  const { server, store, ctx } = createApp();
   await store.load();
   server.listen(PORT, HOST, () => console.log(`Agent Village v3 listening on http://${HOST}:${PORT}`));
-  const shutdown = () => server.close(() => process.exit(0));
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+
+  // Graceful shutdown (#4): stop accepting new runs, abort in-flight runs,
+  // flush the store, then close. A hard timeout guarantees exit if drain hangs
+  // (e.g. a stuck SSE client or a slow provider that ignores the abort).
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[server] ${signal} received; draining`);
+    const forceExit = setTimeout(() => { console.error('[server] drain timed out; forcing exit'); process.exit(1); }, 10_000);
+    forceExit.unref();
+    Promise.resolve()
+      .then(() => ctx.beginDrain())
+      .then(() => new Promise((r) => server.close(r)))
+      .then(() => { clearTimeout(forceExit); console.log('[server] drained cleanly'); process.exit(0); })
+      .catch((e) => { console.error('[server] drain error:', e); process.exit(1); });
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
