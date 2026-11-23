@@ -99,3 +99,44 @@ test('tmp files are cleaned up after saves', async () => {
   assert.deepEqual(files, ['state.json'], 'no leftover .tmp files');
   await rm(dir, { recursive: true, force: true });
 });
+
+test('audit hash chain verifies and detects tampering', async () => {
+  const s = new Store(await tmpPath());
+  await s.load();
+  assert.deepEqual(s.verifyAuditChain(), { ok: true, count: 0 });
+
+  const a = await s.writeAudit({ verdict: 'allow', tool: 'clock', user: 'anon' });
+  const b = await s.writeAudit({ verdict: 'deny', tool: 'sd_generate', user: 'anon' });
+  const c = await s.writeAudit({ verdict: 'require_approval', tool: 'external_http', user: 'anon' });
+
+  // Genesis record links to the zero prevHash.
+  assert.equal(a.prevHash, '0'.repeat(64));
+  assert.equal(a.seq, 1);
+  // Each record links to the previous hash.
+  assert.equal(b.prevHash, a.hash);
+  assert.equal(c.prevHash, b.hash);
+
+  const ok = s.verifyAuditChain();
+  assert.deepEqual(ok, { ok: true, count: 3 });
+
+  // Tamper with the middle record and confirm detection.
+  s.data.audit[1].tool = 'rm -rf';
+  const bad = s.verifyAuditChain();
+  assert.equal(bad.ok, false);
+  assert.equal(bad.brokenAt, 1);
+  assert.match(bad.reason, /hash mismatch/);
+});
+
+test('audit chain survives save/load round-trip', async () => {
+  const path = await tmpPath();
+  const s = new Store(path);
+  await s.load();
+  await s.writeAudit({ verdict: 'allow', tool: 'clock', user: 'anon' });
+  await s.writeAudit({ verdict: 'deny', tool: 'sd_generate', user: 'anon' });
+
+  const s2 = new Store(path);
+  await s2.load();
+  const v = s2.verifyAuditChain();
+  assert.equal(v.ok, true);
+  assert.equal(v.count, 2);
+});
