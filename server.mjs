@@ -101,7 +101,7 @@ export function createApp({ store, metrics } = {}) {
   const _aborts = new Map();
   const _archivist = new Archivist(_store);
   const _security = new SecurityReviewer({ store: _store });
-  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security };
+  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, writers: new Map() };
 
   const server = createServer(async (req, res) => {
     const head = req.method === 'HEAD';
@@ -180,6 +180,30 @@ async function route(req, res, url, ctx) {
     res.end(JSON.stringify(signed, null, 2));
     return true;
   }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'suspend' && method === 'POST') {
+    const run = ctx.store.getRun(parts[2]);
+    if (!run) return sendJson(res, 404, { error: 'not found' });
+    if (run.status !== 'running') return sendJson(res, 409, { error: `run is ${run.status}` });
+    run.status = 'suspended';
+    await ctx.store.save();
+    ctx.metrics.inc('cancels');
+    ctx.writers.get(parts[2])?.({ type: 'suspended', runId: parts[2] });
+    sendJson(res, 200, { suspended: true, run }); return true;
+  }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'resume' && method === 'POST') {
+    const run = ctx.store.getRun(parts[2]);
+    if (!run) return sendJson(res, 404, { error: 'not found' });
+    if (run.status !== 'suspended') return sendJson(res, 409, { error: `run is ${run.status}` });
+    run.status = 'running';
+    await ctx.store.save();
+    ctx.writers.get(parts[2])?.({ type: 'resumed', runId: parts[2] });
+    sendJson(res, 200, { resumed: true, run }); return true;
+  }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'checkpoints' && method === 'GET') {
+    const run = ctx.store.getRun(parts[2]);
+    if (!run) return sendJson(res, 404, { error: 'not found' });
+    sendJson(res, 200, { run, checkpoints: ctx.store.listCheckpoints(parts[2]) }); return true;
+  }
 
   if (parts.length === 3 && parts[1] === 'memory' && parts[2] === 'retrieve' && method === 'GET') {
     const archivist = new Archivist(ctx.store);
@@ -238,25 +262,29 @@ async function handleChat(req, res, conversationId, ctx, user) {
   res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': run.id });
 
   let closed = false;
+  let suspended = false;
   req.on('close', () => { closed = true; });
   const emit = (event, data) => {
     if (closed) return;
     try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { closed = true; }
   };
   emit('run_id', { runId: run.id });
+  ctx.writers.set(run.id, emit);
 
   try {
     for await (const evt of orchestrate({ message: body.message, provider, user, store: ctx.store, conversationId, runId: run.id, signal: ac.signal })) {
       emit(evt.type, evt);
+      if (evt.type === 'suspended') suspended = true;
       if (evt.type === 'security_decision' && (evt.decision.verdict === 'deny')) ctx.metrics.inc('securityDenials');
       if (evt.type === 'critique' && evt.verdict.overall === 'reject') ctx.metrics.inc('criticRejects');
       if (evt.type === 'message_end') await ctx.store.appendMessage(conversationId, { role: 'agent', agentId: evt.agentId, content: evt.content });
     }
-    await ctx.store.finishRun(run.id, { status: 'ok' });
+    await ctx.store.finishRun(run.id, { status: suspended ? 'suspended' : 'ok' });
   } catch (err) {
     if (err.name === 'AbortError') { await ctx.store.finishRun(run.id, { status: 'cancelled' }); emit('cancelled', { runId: run.id }); }
     else { console.error('[chat]', err); await ctx.store.finishRun(run.id, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
   } finally {
+    ctx.writers.delete(run.id);
     ctx.aborts.delete(run.id);
     if (!closed) { try { res.end(); } catch {} }
   }
