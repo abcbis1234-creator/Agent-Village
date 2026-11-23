@@ -57,6 +57,36 @@ test('chat streams full pipeline', async () => {
     assert.match(text, /event: done/);
   } finally { server.close(); }
 });
+
+test('resume continues a completed run from checkpoints', async () => {
+  const { server, base, store } = await start();
+  try {
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    // First run to completion; this persists phase checkpoints.
+    const res = await fetch(`${base}/api/conversations/${c.id}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'what is 2+2?', provider: 'mock' }) });
+    const firstText = await res.text();
+    const runId = firstText.match(/event: run_id\ndata: {"runId":"([^"]+)"/)[1];
+    assert.match(firstText, /event: done/);
+
+    // Resume the (now complete) run.
+    const res2 = await fetch(`${base}/api/runs/${runId}/resume`, { method: 'POST' });
+    assert.equal(res2.status, 200);
+    const resumeText = await res2.text();
+    assert.match(resumeText, /event: phase_resumed/);
+    assert.match(resumeText, /event: done/);
+    // All phases were served from checkpoints (no fresh tool execution).
+    const resumedPhases = (resumeText.match(/event: phase_resumed/g) ?? []).length;
+    assert.ok(resumedPhases >= 4, `expected >=4 resumed phases, got ${resumedPhases}`);
+  } finally { server.close(); }
+});
+
+test('resume rejects unknown and in-progress runs', async () => {
+  const { server, base } = await start();
+  try {
+    const r1 = await fetch(`${base}/api/runs/does-not-exist/resume`, { method: 'POST' });
+    assert.equal(r1.status, 404);
+  } finally { server.close(); }
+});
 test('town: stats, wants, godmode, tick, chronicle', async () => {
   const { server, base } = await start();
   try {

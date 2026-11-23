@@ -193,6 +193,9 @@ async function route(req, res, url, ctx) {
     if (!run) return sendJson(res, 404, { error: 'not found' });
     sendJson(res, 200, { run, events: ctx.store.listEvents(parts[2]) }); return true;
   }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'resume' && method === 'POST') {
+    await handleResume(req, res, parts[2], ctx, user); return true;
+  }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'export' && method === 'GET') {
     const run = ctx.store.getRun(parts[2]);
     if (!run) return sendJson(res, 404, { error: 'not found' });
@@ -361,10 +364,39 @@ async function handleChat(req, res, conversationId, ctx, user) {
 
   const provider = body.provider ?? conversation.provider ?? defaultProvider();
   const run = ctx.store.createRun({ conversationId, provider, user });
-  const ac = new AbortController();
-  ctx.aborts.set(run.id, ac);
+  await streamRun(req, res, { ctx, user, conversationId, runId: run.id, message: body.message, provider, resume: false });
+}
 
-  res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': run.id });
+// Resume (#1): continue an interrupted/failed run from its last completed
+// checkpoint. Reuses the run id and conversation; skips phases that already
+// checkpointed (so side-effecting tools never re-run) and re-emits their
+// cached outputs as events.
+async function handleResume(req, res, runId, ctx, user) {
+  const run = ctx.store.getRun(runId);
+  if (!run) return sendJson(res, 404, { error: 'run not found' });
+  const conversation = ctx.store.getConversation(run.conversationId);
+  if (!conversation) return sendJson(res, 404, { error: 'conversation not found' });
+  if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+  if (run.status === 'running') return sendJson(res, 409, { error: 'run is still in progress' });
+
+  // Recover the original request from the conversation's last user message.
+  const lastUser = [...conversation.messages].reverse().find((m) => m.role === 'user');
+  if (!lastUser?.content) return sendJson(res, 422, { error: 'no user message to resume' });
+
+  ctx.metrics.inc('chats');
+  // Reset the run to running; prior events/checkpoints are preserved.
+  run.status = 'running';
+  await ctx.store.save();
+  await streamRun(req, res, { ctx, user, conversationId: run.conversationId, runId, message: lastUser.content, provider: run.provider ?? defaultProvider(), resume: true });
+}
+
+// Shared SSE streaming for a run (new or resumed). Wires the abort controller,
+// pumps orchestrate() events to the client, and finalizes run status.
+async function streamRun(req, res, { ctx, user, conversationId, runId, message, provider, resume }) {
+  const ac = new AbortController();
+  ctx.aborts.set(runId, ac);
+
+  res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': runId });
 
   let closed = false;
   req.on('close', () => { closed = true; });
@@ -372,27 +404,25 @@ async function handleChat(req, res, conversationId, ctx, user) {
     if (closed) return;
     try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { closed = true; }
   };
-  emit('run_id', { runId: run.id });
+  emit('run_id', { runId });
 
   try {
-    for await (const evt of orchestrate({ message: body.message, provider, user, store: ctx.store, conversationId, runId: run.id, signal: ac.signal })) {
+    for await (const evt of orchestrate({ message, provider, user, store: ctx.store, conversationId, runId, signal: ac.signal, resume })) {
       emit(evt.type, evt);
       if (evt.type === 'security_decision' && (evt.decision.verdict === 'deny')) ctx.metrics.inc('securityDenials');
       if (evt.type === 'critique' && evt.verdict.overall === 'reject') ctx.metrics.inc('criticRejects');
       if (evt.type === 'message_end') await ctx.store.appendMessage(conversationId, { role: 'agent', agentId: evt.agentId, content: evt.content });
     }
-    await ctx.store.finishRun(run.id, { status: 'ok' });
+    await ctx.store.finishRun(runId, { status: 'ok' });
   } catch (err) {
     if (err.name === 'AbortError') {
-      // Distinguish a user cancel from a drain-triggered abort so run history
-      // reflects why the run stopped.
       const status = ctx.draining ? 'interrupted' : 'cancelled';
-      await ctx.store.finishRun(run.id, { status });
-      emit(status === 'interrupted' ? 'interrupted' : 'cancelled', { runId: run.id, status });
+      await ctx.store.finishRun(runId, { status });
+      emit(status === 'interrupted' ? 'interrupted' : 'cancelled', { runId, status });
     }
-    else { console.error('[chat]', err); await ctx.store.finishRun(run.id, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
+    else { console.error('[chat]', err); await ctx.store.finishRun(runId, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
   } finally {
-    ctx.aborts.delete(run.id);
+    ctx.aborts.delete(runId);
     if (!closed) { try { res.end(); } catch {} }
   }
 }
