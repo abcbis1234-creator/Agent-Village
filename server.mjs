@@ -208,8 +208,12 @@ async function route(req, res, url, ctx) {
     const checks = { store: 'ok', write: 'ok', providers: 'ok' };
     let ok = true;
     try { await ctx.store.flush?.(); } catch { checks.write = 'fail'; ok = false; }
-    try { const p = await probeAllProviders(); if (p && typeof p === 'object') checks.providers = 'ok'; }
-    catch { checks.providers = 'degraded'; }
+    if (process.env.VILLAGE_OFFLINE === '1' || process.env.VILLAGE_OFFLINE === 'true') {
+      checks.providers = 'offline (mock)';
+    } else {
+      try { const p = await probeAllProviders(); if (p && typeof p === 'object') checks.providers = 'ok'; }
+      catch { checks.providers = 'degraded'; }
+    }
     if (ctx.draining) { checks.draining = true; ok = false; }
     sendJson(res, ok ? 200 : 503, { status: ok ? 'ready' : 'not_ready', checks });
     return true;
