@@ -18,6 +18,7 @@ import { GodMode } from './lib/godmode.mjs';
 import { Chronicle } from './lib/chronicle.mjs';
 import { Town } from './lib/town.mjs';
 import { redact, redactError } from './lib/redact.mjs';
+import { route as routeModel, listAvailableModels } from './lib/routing/free-first.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -217,6 +218,14 @@ async function route(req, res, url, ctx) {
   if (parts.length === 2 && parts[1] === 'providers' && method === 'GET') { sendJson(res, 200, { providers: listProviders(), default: defaultProvider() }); return true; }
   if (parts.length === 3 && parts[1] === 'providers' && parts[2] === 'health' && method === 'GET') { sendJson(res, 200, { ...(await probeAllProviders()), breakers: providerHealth() }); return true; }
   if (parts.length === 2 && parts[1] === 'agents' && method === 'GET') { sendJson(res, 200, { agents: publicAgents() }); return true; }
+  // Risk-aware model routing (#40): pick a cost/complexity tier for a task.
+  if (parts.length === 2 && parts[1] === 'route' && method === 'POST') {
+    const body = await readJson(req);
+    if (typeof body.message !== 'string' || !body.message.trim()) return sendError(res, 422, 'message required');
+    sendJson(res, 200, routeModel({ message: body.message, context: body.context ?? {} }));
+    return true;
+  }
+  if (parts.length === 2 && parts[1] === 'route' && method === 'GET') { sendJson(res, 200, { models: listAvailableModels() }); return true; }
 
   if (parts.length === 2 && parts[1] === 'conversations') {
     if (method === 'GET') { sendJson(res, 200, { conversations: ctx.store.listConversations(user) }); return true; }
