@@ -17,6 +17,7 @@ import { WantBoard } from './lib/wants.mjs';
 import { GodMode } from './lib/godmode.mjs';
 import { Chronicle } from './lib/chronicle.mjs';
 import { Town } from './lib/town.mjs';
+import { redact, redactError } from './lib/redact.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -45,6 +46,40 @@ function send(res, status, body, extra = {}, head = false) {
   head ? res.end() : res.end(buf);
 }
 function sendJson(res, status, data, head = false) { send(res, status, JSON.stringify(data), { 'Content-Type': 'application/json; charset=utf-8' }, head); }
+
+// SSE schema version (#75). Bump when the event contract changes.
+const SSE_SCHEMA_VERSION = 1;
+
+// Backpressure (#7): cap concurrent runs and SSE clients. Excess is shed with
+// 503 + Retry-After rather than piling up.
+const MAX_ACTIVE_RUNS = 32;
+
+// Stable, machine-readable error codes (#77). Clients branch on `code`, not the
+// human `error` string. Unknown statuses fall back to the status-derived code.
+const ERROR_CODES = {
+  400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND',
+  405: 'METHOD_NOT_ALLOWED', 408: 'TIMEOUT', 409: 'CONFLICT', 413: 'PAYLOAD_TOO_LARGE',
+  415: 'UNSUPPORTED_MEDIA_TYPE', 422: 'UNPROCESSABLE', 429: 'RATE_LIMITED',
+  503: 'UNAVAILABLE', 500: 'INTERNAL',
+};
+function sendError(res, status, message, hint = undefined, head = false) {
+  const body = { error: message, code: ERROR_CODES[status] ?? `HTTP_${status}` };
+  if (hint) body.hint = hint;
+  sendJson(res, status, body, head);
+}
+
+// Idempotency (#8): dedupe side-effecting requests by client-supplied key.
+// A repeated Idempotency-Key returns the stored response instead of re-running.
+const idempotency = new Map(); // key -> { status, body, ts }
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+function idempotencyGet(key) {
+  const e = idempotency.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > IDEMPOTENCY_TTL_MS) { idempotency.delete(key); return null; }
+  return e;
+}
+function idempotencySet(key, status, body) { idempotency.set(key, { status, body, ts: Date.now() }); }
+setInterval(() => { const now = Date.now(); for (const [k, e] of idempotency) if (now - e.ts > IDEMPOTENCY_TTL_MS) idempotency.delete(k); }, IDEMPOTENCY_TTL_MS).unref();
 
 const buckets = new Map();
 function rateLimited(ip) {
@@ -127,23 +162,30 @@ export function createApp({ store, metrics } = {}) {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const ip = req.socket.remoteAddress ?? 'unknown';
+      const isRun = req.method === 'POST' && /^\/api\/(conversations\/[^/]+\/chat|godmode|town\/tick)$/.test(url.pathname);
       // While draining, refuse new run-creating requests with 503 + Retry-After.
-      if (ctx.draining && req.method === 'POST' && /^\/api\/(conversations\/[^/]+\/chat|godmode|town\/tick)$/.test(url.pathname)) {
+      if (ctx.draining && isRun) {
         res.setHeader('Retry-After', '5');
-        return sendJson(res, 503, { error: 'server is draining; retry later' }, head);
+        return sendError(res, 503, 'server is draining; retry later', 'retry after the server restarts', head);
       }
-      if (url.pathname.startsWith('/api/') && rateLimited(ip)) return sendJson(res, 429, { error: 'Too Many Requests' }, head);
-      if (url.pathname.startsWith('/api/') && !checkToken(req, url)) return sendJson(res, 401, { error: 'Unauthorized' }, head);
+      // Backpressure (#7): shed new runs when the concurrency cap is reached.
+      if (isRun && ctx.aborts.size >= MAX_ACTIVE_RUNS) {
+        res.setHeader('Retry-After', '2');
+        return sendError(res, 503, 'too many active runs', 'retry shortly', head);
+      }
+      if (url.pathname.startsWith('/api/') && rateLimited(ip)) return sendError(res, 429, 'Too Many Requests', 'slow down', head);
+      if (url.pathname.startsWith('/api/') && !checkToken(req, url)) return sendError(res, 401, 'Unauthorized', 'provide a valid VILLAGE_API_TOKEN', head);
       const handled = await route(req, res, url, ctx);
       if (handled) { _metrics.observeLatency(Date.now() - t0); return; }
-      if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'Method Not Allowed' }, head);
+      if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'Method Not Allowed', undefined, head);
       await serveStatic(req, res, url.pathname);
       _metrics.observeLatency(Date.now() - t0);
     } catch (err) {
       _metrics.inc('errors');
       const status = Number.isInteger(err?.status) ? err.status : 500;
-      if (status >= 500) console.error('[server]', err);
-      if (!res.headersSent) sendJson(res, status, { error: status === 500 ? 'Internal Server Error' : err.message });
+      // Redact secrets from logged and returned errors (#11).
+      if (status >= 500) console.error('[server]', redactError(err));
+      if (!res.headersSent) sendError(res, status, status === 500 ? 'Internal Server Error' : redact(err.message), undefined, head);
       else res.destroy();
     }
   });
@@ -158,6 +200,19 @@ async function route(req, res, url, ctx) {
   if (parts[0] !== 'api') return false;
 
   if (parts.length === 2 && parts[1] === 'health' && method === 'GET') { sendJson(res, 200, { ok: true }); return true; }
+  // Liveness (#9): process is up. Always 200 if the event loop is responding.
+  if (parts.length === 2 && parts[1] === 'healthz' && method === 'GET') { sendJson(res, 200, { status: 'ok' }); return true; }
+  // Readiness (#9): store loaded + write path OK + providers probed.
+  if (parts.length === 2 && parts[1] === 'readyz' && method === 'GET') {
+    const checks = { store: 'ok', write: 'ok', providers: 'ok' };
+    let ok = true;
+    try { await ctx.store.flush?.(); } catch { checks.write = 'fail'; ok = false; }
+    try { const p = await probeAllProviders(); if (p && typeof p === 'object') checks.providers = 'ok'; }
+    catch { checks.providers = 'degraded'; }
+    if (ctx.draining) { checks.draining = true; ok = false; }
+    sendJson(res, ok ? 200 : 503, { status: ok ? 'ready' : 'not_ready', checks });
+    return true;
+  }
   if (parts.length === 2 && parts[1] === 'metrics' && method === 'GET') { sendJson(res, 200, ctx.metrics.snapshot()); return true; }
   if (parts.length === 2 && parts[1] === 'providers' && method === 'GET') { sendJson(res, 200, { providers: listProviders(), default: defaultProvider() }); return true; }
   if (parts.length === 3 && parts[1] === 'providers' && parts[2] === 'health' && method === 'GET') { sendJson(res, 200, { ...(await probeAllProviders()), breakers: providerHealth() }); return true; }
@@ -198,9 +253,12 @@ async function route(req, res, url, ctx) {
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'export' && method === 'GET') {
     const run = ctx.store.getRun(parts[2]);
-    if (!run) return sendJson(res, 404, { error: 'not found' });
+    if (!run) return sendError(res, 404, 'not found');
     const conv = ctx.store.getConversation(run.conversationId);
-    const signed = signExport({ run, conversation: conv, events: ctx.store.listEvents(parts[2]) });
+    // Redact secrets from the export body before signing (#11/#20). The
+    // signature covers the redacted content so it stays verifiable.
+    const safe = redact({ run, conversation: conv, events: ctx.store.listEvents(parts[2]) });
+    const signed = signExport(safe);
     res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="run-${parts[2]}.json"` });
     res.end(JSON.stringify(signed, null, 2));
     return true;
@@ -240,11 +298,15 @@ async function route(req, res, url, ctx) {
     return true;
   }
   if (parts.length === 2 && parts[1] === 'wants' && method === 'POST') {
+    const idemKey = req.headers['idempotency-key'];
+    if (idemKey) { const c = idempotencyGet(idemKey); if (c) { sendJson(res, c.status, c.body); return true; } }
     const body = await readJson(req);
     try {
-      sendJson(res, 201, ctx.wants.post({ ...body, user }));
+      const want = ctx.wants.post({ ...body, user });
+      if (idemKey) idempotencySet(idemKey, 201, want);
+      sendJson(res, 201, want);
     } catch (e) {
-      sendJson(res, 422, { error: e.message });
+      sendError(res, 422, e.message);
     }
     return true;
   }
@@ -276,11 +338,15 @@ async function route(req, res, url, ctx) {
 
   /* --- town: god mode + world events --- */
   if (parts.length === 2 && parts[1] === 'godmode' && method === 'POST') {
+    const idemKey = req.headers['idempotency-key'];
+    if (idemKey) { const c = idempotencyGet(idemKey); if (c) { sendJson(res, c.status, c.body); return true; } }
     const body = await readJson(req);
     try {
-      sendJson(res, 201, ctx.god.act({ ...body, user }));
+      const result = ctx.god.act({ ...body, user });
+      if (idemKey) idempotencySet(idemKey, 201, result);
+      sendJson(res, 201, result);
     } catch (e) {
-      sendJson(res, 422, { error: e.message });
+      sendError(res, 422, e.message);
     }
     return true;
   }
@@ -322,7 +388,11 @@ async function route(req, res, url, ctx) {
     return true;
   }
   if (parts.length === 3 && parts[1] === 'town' && parts[2] === 'tick' && method === 'POST') {
-    sendJson(res, 200, ctx.town.tick({ user }));
+    const idemKey = req.headers['idempotency-key'];
+    if (idemKey) { const c = idempotencyGet(idemKey); if (c) { sendJson(res, c.status, c.body); return true; } }
+    const result = ctx.town.tick({ user });
+    if (idemKey) idempotencySet(idemKey, 200, result);
+    sendJson(res, 200, result);
     return true;
   }
 
@@ -347,23 +417,32 @@ async function route(req, res, url, ctx) {
     sendJson(res, 201, m); return true;
   }
 
-  sendJson(res, 404, { error: 'not found' });
+  sendError(res, 404, 'not found');
   return true;
 }
 
 async function handleChat(req, res, conversationId, ctx, user) {
   const conversation = ctx.store.getConversation(conversationId);
-  if (!conversation) return sendJson(res, 404, { error: 'conversation not found' });
-  if (conversation.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+  if (!conversation) return sendError(res, 404, 'conversation not found');
+  if (conversation.user !== user) return sendError(res, 403, 'forbidden');
+
+  // Idempotency (#8): a reused Idempotency-Key must not trigger a second run.
+  // Chat is a stream, so we refuse the duplicate with 409 + the original run id.
+  const idemKey = req.headers['idempotency-key'];
+  if (idemKey) {
+    const c = idempotencyGet(idemKey);
+    if (c) return sendError(res, 409, 'duplicate request (idempotency key already used)', `original run: ${c.body?.runId ?? 'unknown'}`);
+  }
 
   const body = await readJson(req);
-  if (typeof body.message !== 'string' || !body.message.trim()) return sendJson(res, 422, { error: 'message required' });
+  if (typeof body.message !== 'string' || !body.message.trim()) return sendError(res, 422, 'message required');
 
   ctx.metrics.inc('chats');
   await ctx.store.appendMessage(conversationId, { role: 'user', content: body.message });
 
   const provider = body.provider ?? conversation.provider ?? defaultProvider();
   const run = ctx.store.createRun({ conversationId, provider, user });
+  if (idemKey) idempotencySet(idemKey, 200, { runId: run.id, status: 'streaming' });
   await streamRun(req, res, { ctx, user, conversationId, runId: run.id, message: body.message, provider, resume: false });
 }
 
@@ -396,15 +475,29 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
   const ac = new AbortController();
   ctx.aborts.set(runId, ac);
 
-  res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': runId });
+  res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': runId, 'X-SSE-Schema': String(SSE_SCHEMA_VERSION) });
 
   let closed = false;
   req.on('close', () => { closed = true; });
+  // SSE event IDs (#3): each event carries a monotonic `id:` so a reconnecting
+  // client can send Last-Event-ID and receive only the events it missed.
+  let seq = 0;
   const emit = (event, data) => {
     if (closed) return;
-    try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { closed = true; }
+    seq += 1;
+    const payload = { ...data, _seq: seq };
+    try { res.write(`id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { closed = true; }
   };
-  emit('run_id', { runId });
+  emit('run_id', { runId, schemaVersion: SSE_SCHEMA_VERSION });
+
+  // Replay missed events on reconnect (#3). The store already has every event
+  // with its seq; a client that reconnects with Last-Event-ID gets the gap.
+  const lastEventId = Number(req.headers['last-event-id']);
+  if (Number.isInteger(lastEventId) && lastEventId > 0) {
+    for (const e of ctx.store.listEvents(runId)) {
+      if (e.seq > lastEventId) { try { res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`); } catch { closed = true; break; } }
+    }
+  }
 
   try {
     for await (const evt of orchestrate({ message, provider, user, store: ctx.store, conversationId, runId, signal: ac.signal, resume })) {

@@ -67,6 +67,26 @@ test('capability tokens are user-bound', async () => {
   assert.equal(d.verdict, VERDICTS.REQUIRE_APPROVAL);
 });
 
+test('capability resource binding prevents replay against another resource', async () => {
+  const s = new SecurityReviewer({});
+  // Token minted for a specific prompt only works for that prompt.
+  const tok = s.mintCapability({ tool: 'sd_generate', user: 'alice', resource: 'a cat' });
+  const ok = await s.gate({ tool: 'sd_generate', args: { prompt: 'a cat' }, user: 'alice', capabilityToken: tok });
+  assert.equal(ok.verdict, VERDICTS.ALLOW_LOGGED);
+  // Replaying the same token against a different prompt is rejected.
+  const tok2 = s.mintCapability({ tool: 'sd_generate', user: 'alice', resource: 'a cat' });
+  const bad = await s.gate({ tool: 'sd_generate', args: { prompt: 'a dog' }, user: 'alice', capabilityToken: tok2 });
+  assert.equal(bad.verdict, VERDICTS.REQUIRE_APPROVAL);
+});
+
+test('capability records issuer in the token metadata', async () => {
+  const s = new SecurityReviewer({});
+  const tok = s.mintCapability({ tool: 'sd_generate', issuer: 'admin-console', resource: 'cat' });
+  const cap = s.capabilities.get(tok);
+  assert.equal(cap.issuer, 'admin-console');
+  assert.equal(cap.resource, 'cat');
+});
+
 test('allowed tool output passes the rail', () => {
   const s = new SecurityReviewer({});
   const r = s.scanToolOutput('calculator', '42');

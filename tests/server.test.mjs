@@ -29,6 +29,62 @@ test('health endpoint', async () => {
   const { server, base } = await start();
   try { const res = await fetch(`${base}/api/health`); assert.deepEqual(await res.json(), { ok: true }); } finally { server.close(); }
 });
+
+test('healthz liveness and readyz readiness', async () => {
+  const { server, base } = await start();
+  try {
+    const hz = await fetch(`${base}/api/healthz`);
+    assert.equal(hz.status, 200);
+    assert.equal((await hz.json()).status, 'ok');
+    const rz = await fetch(`${base}/api/readyz`);
+    assert.equal(rz.status, 200);
+    const body = await rz.json();
+    assert.equal(body.status, 'ready');
+    assert.equal(body.checks.store, 'ok');
+  } finally { server.close(); }
+});
+
+test('error responses carry stable codes', async () => {
+  const { server, base } = await start();
+  try {
+    const r = await fetch(`${base}/api/nope`);
+    assert.equal(r.status, 404);
+    const body = await r.json();
+    assert.equal(body.code, 'NOT_FOUND');
+    // Method not allowed on a known path.
+    const r2 = await fetch(`${base}/api/health`, { method: 'POST' });
+    assert.ok(r2.status === 404 || r2.status === 405);
+  } finally { server.close(); }
+});
+
+test('idempotency key dedupes want creation', async () => {
+  const { server, base } = await start();
+  try {
+    const headers = { 'Content-Type': 'application/json', 'Idempotency-Key': 'want-123' };
+    const r1 = await fetch(`${base}/api/wants`, { method: 'POST', headers, body: JSON.stringify({ text: 'find a coffee shop' }) });
+    const w1 = await r1.json();
+    assert.ok(w1.id);
+    const r2 = await fetch(`${base}/api/wants`, { method: 'POST', headers, body: JSON.stringify({ text: 'find a coffee shop' }) });
+    const w2 = await r2.json();
+    assert.equal(w2.id, w1.id, 'duplicate returns the original want');
+    // Only one want was actually created.
+    const list = await (await fetch(`${base}/api/wants`)).json();
+    assert.equal(list.wants.length, 1);
+  } finally { server.close(); }
+});
+
+test('chat SSE includes schema version and monotonic event ids', async () => {
+  const { server, base } = await start();
+  try {
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    const res = await fetch(`${base}/api/conversations/${c.id}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'what is 2+2?', provider: 'mock' }) });
+    assert.equal(res.headers.get('x-sse-schema'), '1');
+    const text = await res.text();
+    assert.match(text, /id: 1\nevent: run_id/);
+    assert.match(text, /"schemaVersion":1/);
+    assert.match(text, /id: 2\nevent:/);
+  } finally { server.close(); }
+});
 test('path traversal blocked', async () => {
   const { server, base } = await start();
   try {
