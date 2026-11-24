@@ -54,6 +54,29 @@ test('store lists checkpoints scoped to a run', async () => {
   assert.equal(store.listCheckpoints('r3').length, 0);
 });
 
+test('handled 4xx responses do not trigger a second write', async () => {
+  const { server, store, base } = await start();
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => logged.push(args.map(String).join(' '));
+  try {
+    const run = store.createRun({ conversationId: 'c1', provider: 'mock', user: 'u1' });
+    const forbidden = await fetch(`${base}/api/runs/${run.id}/suspend`, { method: 'POST', headers: { 'X-Village-User': 'u2' } });
+    assert.equal(forbidden.status, 403);
+    const missing = await fetch(`${base}/api/runs/nope/suspend`, { method: 'POST' });
+    assert.equal(missing.status, 404);
+    const suspended = await fetch(`${base}/api/runs/${run.id}/suspend`, { method: 'POST', headers: { 'X-Village-User': 'u1' } });
+    assert.equal(suspended.status, 200);
+    const conflict = await fetch(`${base}/api/runs/${run.id}/suspend`, { method: 'POST', headers: { 'X-Village-User': 'u1' } });
+    assert.equal(conflict.status, 409);
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    console.error = original;
+    await new Promise((resolve) => server.close(resolve));
+  }
+  assert.deepEqual(logged, [], `unexpected server errors: ${logged.join('\n')}`);
+});
+
 test('POST /api/runs/:id/suspend and GET /api/runs/:id/checkpoints', async () => {
   const { server, store, base } = await start();
   try {

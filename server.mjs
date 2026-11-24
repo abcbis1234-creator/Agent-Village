@@ -45,6 +45,7 @@ function send(res, status, body, extra = {}, head = false) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body ?? ''));
   res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Length': buf.length, ...extra });
   head ? res.end() : res.end(buf);
+  return true;
 }
 function sendJson(res, status, data, head = false) { send(res, status, JSON.stringify(data), { 'Content-Type': 'application/json; charset=utf-8' }, head); }
 
@@ -177,7 +178,10 @@ export function createApp({ store, metrics } = {}) {
       if (url.pathname.startsWith('/api/') && rateLimited(ip)) return sendError(res, 429, 'Too Many Requests', 'slow down', head);
       if (url.pathname.startsWith('/api/') && !checkToken(req, url)) return sendError(res, 401, 'Unauthorized', 'provide a valid VILLAGE_API_TOKEN', head);
       const handled = await route(req, res, url, ctx);
-      if (handled) { _metrics.observeLatency(Date.now() - t0); return; }
+      // route() returns false only for non-API paths. Any other value means the
+      // response was already written, including `return sendJson(...)` helpers
+      // that used to leak `undefined` and trigger a second 405 write.
+      if (handled !== false) { _metrics.observeLatency(Date.now() - t0); return; }
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'Method Not Allowed', undefined, head);
       await serveStatic(req, res, url.pathname);
       _metrics.observeLatency(Date.now() - t0);
