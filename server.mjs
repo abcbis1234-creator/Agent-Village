@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 
 import { publicAgents } from './lib/agents.mjs';
-import { Store } from './lib/store.mjs';
+import { Store, recoverInterruptedRuns } from './lib/store.mjs';
 import { orchestrate } from './lib/orchestrator.mjs';
 import { createMetrics } from './lib/metrics.mjs';
 import { VectorMemory } from './lib/memory.mjs';
@@ -513,6 +513,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
 
   let closed = false;
   let suspended = false;
+  let lastPhase = 'queued';
   req.on('close', () => { closed = true; });
   // SSE event IDs (#3): each event carries a monotonic `id:` so a reconnecting
   // client can send Last-Event-ID and receive only the events it missed.
@@ -526,6 +527,16 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
   emit('run_id', { runId, schemaVersion: SSE_SCHEMA_VERSION });
   ctx.writers.set(runId, emit);
 
+  // Heartbeat (DUR-030): the orchestrator persists a heartbeat per event; the
+  // SSE stream also emits one every 15s so a client can distinguish a long
+  // model call from a dead connection.
+  const heartbeat = setInterval(() => {
+    const at = Date.now();
+    ctx.store.heartbeat?.(runId, { phase: lastPhase });
+    emit('heartbeat', { runId, phase: lastPhase, at });
+  }, 15_000);
+  heartbeat.unref?.();
+
   // Replay missed events on reconnect (#3). The store already has every event
   // with its seq; a client that reconnects with Last-Event-ID gets the gap.
   const lastEventId = Number(req.headers['last-event-id']);
@@ -537,6 +548,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
 
   try {
     for await (const evt of orchestrate({ message, provider, user, store: ctx.store, conversationId, runId, signal: ac.signal, resume })) {
+      if (evt.phase) lastPhase = evt.phase;
       emit(evt.type, evt);
       if (evt.type === 'suspended') suspended = true;
       if (evt.type === 'security_decision' && (evt.decision.verdict === 'deny')) ctx.metrics.inc('securityDenials');
@@ -552,6 +564,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
     }
     else { console.error('[chat]', err); await ctx.store.finishRun(runId, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
   } finally {
+    clearInterval(heartbeat);
     ctx.writers.delete(runId);
     ctx.aborts.delete(runId);
     if (!closed) { try { res.end(); } catch {} }
@@ -562,6 +575,11 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const { server, store, ctx } = createApp();
   await store.load();
+  // Crash detection (DUR-031): nothing can still be running in a fresh process,
+  // so any run left as `running` is interrupted. Mark it honestly instead of
+  // leaving clients to wait on a stream that will never resume.
+  const interrupted = await recoverInterruptedRuns(store, { staleAfterMs: 0 });
+  if (interrupted.length) console.log(`[server] marked ${interrupted.length} orphaned run(s) interrupted`);
   server.listen(PORT, HOST, () => console.log(`Agent Village v3 listening on http://${HOST}:${PORT}`));
 
   // Graceful shutdown (#4): stop accepting new runs, abort in-flight runs,
