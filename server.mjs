@@ -45,6 +45,7 @@ function send(res, status, body, extra = {}, head = false) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body ?? ''));
   res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Length': buf.length, ...extra });
   head ? res.end() : res.end(buf);
+  return true;
 }
 function sendJson(res, status, data, head = false) { send(res, status, JSON.stringify(data), { 'Content-Type': 'application/json; charset=utf-8' }, head); }
 
@@ -145,7 +146,7 @@ export function createApp({ store, metrics } = {}) {
   const _god = new GodMode(_store);
   const _chronicle = new Chronicle(_store);
   const _town = new Town(_store);
-  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, wants: _wants, god: _god, chronicle: _chronicle, town: _town, draining: false };
+  const ctx = { store: _store, metrics: _metrics, memory: _memory, aborts: _aborts, archivist: _archivist, security: _security, wants: _wants, god: _god, chronicle: _chronicle, town: _town, draining: false, writers: new Map() };
 
   // Graceful drain (#4): stop accepting new runs, abort in-flight runs (their
   // SSE handlers emit 'cancelled'/'interrupted' and close), then flush the
@@ -177,7 +178,10 @@ export function createApp({ store, metrics } = {}) {
       if (url.pathname.startsWith('/api/') && rateLimited(ip)) return sendError(res, 429, 'Too Many Requests', 'slow down', head);
       if (url.pathname.startsWith('/api/') && !checkToken(req, url)) return sendError(res, 401, 'Unauthorized', 'provide a valid VILLAGE_API_TOKEN', head);
       const handled = await route(req, res, url, ctx);
-      if (handled) { _metrics.observeLatency(Date.now() - t0); return; }
+      // route() returns false only for non-API paths. Any other value means the
+      // response was already written, including `return sendJson(...)` helpers
+      // that used to leak `undefined` and trigger a second 405 write.
+      if (handled !== false) { _metrics.observeLatency(Date.now() - t0); return; }
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'Method Not Allowed', undefined, head);
       await serveStatic(req, res, url.pathname);
       _metrics.observeLatency(Date.now() - t0);
@@ -255,6 +259,23 @@ async function route(req, res, url, ctx) {
     ctx.metrics.inc('cancels');
     ac.abort();
     sendJson(res, 200, { cancelled: true }); return true;
+  }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'suspend' && method === 'POST') {
+    const run = ctx.store.getRun(parts[2]);
+    if (!run) return sendJson(res, 404, { error: 'run not found' });
+    if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+    if (run.status !== 'running') return sendJson(res, 409, { error: `run is ${run.status}` });
+    run.status = 'suspended';
+    await ctx.store.save();
+    ctx.metrics.inc('cancels');
+    ctx.writers.get(parts[2])?.('suspended', { type: 'suspended', runId: parts[2] });
+    sendJson(res, 200, { suspended: true, run }); return true;
+  }
+  if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'checkpoints' && method === 'GET') {
+    const run = ctx.store.getRun(parts[2]);
+    if (!run) return sendJson(res, 404, { error: 'run not found' });
+    if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+    sendJson(res, 200, { run, checkpoints: ctx.store.listCheckpoints(parts[2]) }); return true;
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'events' && method === 'GET') {
     const run = ctx.store.getRun(parts[2]);
@@ -491,6 +512,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
   res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Run-Id': runId, 'X-SSE-Schema': String(SSE_SCHEMA_VERSION) });
 
   let closed = false;
+  let suspended = false;
   req.on('close', () => { closed = true; });
   // SSE event IDs (#3): each event carries a monotonic `id:` so a reconnecting
   // client can send Last-Event-ID and receive only the events it missed.
@@ -502,6 +524,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
     try { res.write(`id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { closed = true; }
   };
   emit('run_id', { runId, schemaVersion: SSE_SCHEMA_VERSION });
+  ctx.writers.set(runId, emit);
 
   // Replay missed events on reconnect (#3). The store already has every event
   // with its seq; a client that reconnects with Last-Event-ID gets the gap.
@@ -515,11 +538,12 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
   try {
     for await (const evt of orchestrate({ message, provider, user, store: ctx.store, conversationId, runId, signal: ac.signal, resume })) {
       emit(evt.type, evt);
+      if (evt.type === 'suspended') suspended = true;
       if (evt.type === 'security_decision' && (evt.decision.verdict === 'deny')) ctx.metrics.inc('securityDenials');
       if (evt.type === 'critique' && evt.verdict.overall === 'reject') ctx.metrics.inc('criticRejects');
       if (evt.type === 'message_end') await ctx.store.appendMessage(conversationId, { role: 'agent', agentId: evt.agentId, content: evt.content });
     }
-    await ctx.store.finishRun(runId, { status: 'ok' });
+    await ctx.store.finishRun(runId, { status: suspended ? 'suspended' : 'ok' });
   } catch (err) {
     if (err.name === 'AbortError') {
       const status = ctx.draining ? 'interrupted' : 'cancelled';
@@ -528,6 +552,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
     }
     else { console.error('[chat]', err); await ctx.store.finishRun(runId, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
   } finally {
+    ctx.writers.delete(runId);
     ctx.aborts.delete(runId);
     if (!closed) { try { res.end(); } catch {} }
   }
