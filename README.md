@@ -42,6 +42,9 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 - `GET /api/conversations/:id`
 - `POST /api/conversations/:id/chat` — SSE stream
 - `POST /api/runs/:id/cancel`
+- `POST /api/runs/:id/suspend` — pause at the next phase boundary
+- `POST /api/runs/:id/resume` — continue a suspended run from its checkpoint
+- `GET /api/runs/:id/checkpoints` — list stored checkpoints for a run
 - `GET /api/runs/:id/events` / `GET /api/runs/:id/export`
 - `GET /api/memory/retrieve?q=...`
 - `POST /api/memory/consolidate` — decay / promote / merge
@@ -65,7 +68,7 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 
 ## SSE events
 
-`start` · `phase` · `memory_packet` · `scout_report` · `planner_raw` · `security_decision` · `tool_call` · `tool_result` · `tool_error` · `tool_denied` · `verification` · `brief` · `message_start` · `chunk` · `message_end` · `critique` · `revision_requested` · `archive_written` · `budget` · `done`
+`start` · `phase` · `memory_packet` · `scout_report` · `planner_raw` · `security_decision` · `tool_call` · `tool_result` · `tool_error` · `tool_denied` · `verification` · `brief` · `message_start` · `chunk` · `message_end` · `critique` · `revision_requested` · `archive_written` · `budget` · `suspended` · `done`
 
 ## Scripts
 
@@ -73,6 +76,18 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 - `npm run dev` — watch mode
 - `npm run lint` — syntax-check all files
 - `npm test` — run all tests
+- `npm run eval` — golden routing suite
+- `npm run eval:security` — adversarial prompt-injection suite
+- `npm run ideas:check` — validate the upgrade catalog
+- `npm run verify` — lint + tests + catalog + both evals
+
+## Upgrade backlog
+
+[`docs/ideas/`](docs/ideas/README.md) contains 1,040 researched upgrade ideas across
+orchestration, durability, memory, models, tools, security, evaluation, observability,
+APIs, UX, simulation, and original experiments. Every idea has an id, an integration
+point, an effort estimate, and a source. Start with the
+[top 50 roadmap](docs/ideas/README.md#top-50-roadmap).
 
 ## Providers
 
