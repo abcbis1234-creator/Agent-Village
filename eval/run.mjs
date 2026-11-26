@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { createApp } from '../server.mjs';
 import { Store } from '../lib/store.mjs';
+import { classifyFailure } from '../lib/failures.mjs';
 
 async function start() {
   const dir = await mkdtemp(join(tmpdir(), 'av-'));
@@ -37,6 +38,7 @@ async function sseText(port, path, body) {
 
 let pass = 0;
 let fail = 0;
+const failures = [];
 
 const golden = JSON.parse(await readFile(new URL('./golden.json', import.meta.url), 'utf8'));
 
@@ -54,15 +56,24 @@ for (const { mission, expect } of golden) {
       console.log(`PASS  ${expect.padEnd(14)} ${mission}`);
     } else {
       fail += 1;
-      console.log(`FAIL  ${expect.padEnd(14)} ${mission} — missing events (done=${hasDone}, message_end=${hasMessageEnd}, budget=${hasBudget})`);
+      const f = classifyFailure({ code: 'FORMAT_EMPTY_OUTPUT', message: 'missing done/message_end/budget events' });
+      failures.push(f);
+      console.log(`FAIL  ${expect.padEnd(14)} ${mission} — missing events (done=${hasDone}, message_end=${hasMessageEnd}, budget=${hasBudget}) failure=${f.code}`);
     }
   } catch (e) {
     fail += 1;
-    console.log(`FAIL  ${expect.padEnd(14)} ${mission} — ${e.message}`);
+    const f = classifyFailure(e);
+    failures.push(f);
+    console.log(`FAIL  ${expect.padEnd(14)} ${mission} — ${e.message} failure=${f.code}`);
   } finally {
     server.close();
   }
 }
 
+if (failures.length) {
+  const byCategory = {};
+  for (const f of failures) byCategory[f.category] = (byCategory[f.category] ?? 0) + 1;
+  console.log(`failure taxonomy: ${Object.entries(byCategory).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+}
 console.log(`\n${pass}/${pass + fail} golden missions produced valid bounded results`);
 process.exit(fail ? 1 : 0);

@@ -19,6 +19,7 @@ import { Chronicle } from './lib/chronicle.mjs';
 import { Town } from './lib/town.mjs';
 import { redact, redactError } from './lib/redact.mjs';
 import { route as routeModel, listAvailableModels } from './lib/routing/free-first.mjs';
+import { classifyFailure } from './lib/failures.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -562,7 +563,11 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
       await ctx.store.finishRun(runId, { status });
       emit(status === 'interrupted' ? 'interrupted' : 'cancelled', { runId, status });
     }
-    else { console.error('[chat]', err); await ctx.store.finishRun(runId, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
+    else {
+      console.error('[chat]', err);
+      await ctx.store.finishRun(runId, { status: 'error', error: err.message });
+      emit('error', { message: err.message, failure: classifyFailure(err) });
+    }
   } finally {
     clearInterval(heartbeat);
     ctx.writers.delete(runId);
