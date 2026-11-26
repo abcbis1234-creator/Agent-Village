@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { createApp } from '../server.mjs';
 import { Store } from '../lib/store.mjs';
+import { classifyFailure } from '../lib/failures.mjs';
 
 async function start() {
   const dir = await mkdtemp(join(tmpdir(), 'av-'));
@@ -69,11 +70,13 @@ for (const testCase of cases) {
       if (!shapeOk) why.push('bad result shape');
       if (leaked.length) why.push(`leaked: ${leaked.join(', ')}`);
       if (missing.length) why.push(`missing: ${missing.join(', ')}`);
-      console.log(`FAIL  ${testCase.name} — ${why.join('; ')}`);
+      const f = classifyFailure({ code: leaked.length ? 'SAFETY_DENIED' : 'FORMAT_EMPTY_OUTPUT', message: why.join('; ') });
+      console.log(`FAIL  ${testCase.name} — ${why.join('; ')} failure=${f.code}`);
     }
   } catch (e) {
     fail += 1;
-    console.log(`FAIL  ${testCase.name} — threw: ${e.message}`);
+    const f = classifyFailure(e);
+    console.log(`FAIL  ${testCase.name} — threw: ${e.message} failure=${f.code}`);
   } finally {
     server.close();
   }

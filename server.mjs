@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 
 import { publicAgents } from './lib/agents.mjs';
-import { Store } from './lib/store.mjs';
+import { Store, recoverInterruptedRuns } from './lib/store.mjs';
 import { orchestrate } from './lib/orchestrator.mjs';
 import { createMetrics } from './lib/metrics.mjs';
 import { VectorMemory } from './lib/memory.mjs';
@@ -19,6 +19,7 @@ import { Chronicle } from './lib/chronicle.mjs';
 import { Town } from './lib/town.mjs';
 import { redact, redactError } from './lib/redact.mjs';
 import { route as routeModel, listAvailableModels } from './lib/routing/free-first.mjs';
+import { classifyFailure } from './lib/failures.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = resolve(join(HERE, 'public'));
@@ -48,6 +49,9 @@ function send(res, status, body, extra = {}, head = false) {
   return true;
 }
 function sendJson(res, status, data, head = false) { send(res, status, JSON.stringify(data), { 'Content-Type': 'application/json; charset=utf-8' }, head); }
+function sendProblem(res, status, problem, head = false) {
+  return send(res, status, JSON.stringify(problem), { 'Content-Type': 'application/problem+json; charset=utf-8' }, head);
+}
 
 // SSE schema version (#75). Bump when the event contract changes.
 const SSE_SCHEMA_VERSION = 1;
@@ -64,10 +68,26 @@ const ERROR_CODES = {
   415: 'UNSUPPORTED_MEDIA_TYPE', 422: 'UNPROCESSABLE', 429: 'RATE_LIMITED',
   503: 'UNAVAILABLE', 500: 'INTERNAL',
 };
+const ERROR_TITLES = {
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  405: 'Method Not Allowed', 408: 'Request Timeout', 409: 'Conflict', 413: 'Payload Too Large',
+  415: 'Unsupported Media Type', 422: 'Unprocessable Content', 429: 'Too Many Requests',
+  500: 'Internal Server Error', 503: 'Service Unavailable',
+};
+// RFC 9457 problem details. `error` and `code` are kept as extension members
+// for existing clients; new clients should branch on `code` / `status`.
 function sendError(res, status, message, hint = undefined, head = false) {
-  const body = { error: message, code: ERROR_CODES[status] ?? `HTTP_${status}` };
-  if (hint) body.hint = hint;
-  sendJson(res, status, body, head);
+  const problem = {
+    type: 'about:blank',
+    title: ERROR_TITLES[status] ?? `HTTP ${status}`,
+    status,
+    detail: message,
+    code: ERROR_CODES[status] ?? `HTTP_${status}`,
+    error: message,
+  };
+  if (hint) problem.hint = hint;
+  if (typeof res.problemInstance === 'string') problem.instance = res.problemInstance;
+  return sendProblem(res, status, problem, head);
 }
 
 // Idempotency (#8): dedupe side-effecting requests by client-supplied key.
@@ -163,6 +183,7 @@ export function createApp({ store, metrics } = {}) {
     _metrics.inc('requests');
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
+      res.problemInstance = url.pathname;
       const ip = req.socket.remoteAddress ?? 'unknown';
       const isRun = req.method === 'POST' && /^\/api\/(conversations\/[^/]+\/chat|godmode|town\/tick)$/.test(url.pathname);
       // While draining, refuse new run-creating requests with 503 + Retry-After.
@@ -245,8 +266,8 @@ async function route(req, res, url, ctx) {
   }
   if (parts.length === 3 && parts[1] === 'conversations' && method === 'GET') {
     const c = ctx.store.getConversation(parts[2]);
-    if (!c) return sendJson(res, 404, { error: 'not found' });
-    if (c.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+    if (!c) return sendError(res, 404, 'not found');
+    if (c.user !== user) return sendError(res, 403, 'forbidden');
     sendJson(res, 200, c); return true;
   }
   if (parts.length === 4 && parts[1] === 'conversations' && parts[3] === 'chat' && method === 'POST') {
@@ -255,16 +276,16 @@ async function route(req, res, url, ctx) {
 
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'cancel' && method === 'POST') {
     const ac = ctx.aborts.get(parts[2]);
-    if (!ac) return sendJson(res, 404, { error: 'not tracked' });
+    if (!ac) return sendError(res, 404, 'not tracked');
     ctx.metrics.inc('cancels');
     ac.abort();
     sendJson(res, 200, { cancelled: true }); return true;
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'suspend' && method === 'POST') {
     const run = ctx.store.getRun(parts[2]);
-    if (!run) return sendJson(res, 404, { error: 'run not found' });
-    if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
-    if (run.status !== 'running') return sendJson(res, 409, { error: `run is ${run.status}` });
+    if (!run) return sendError(res, 404, 'run not found');
+    if (run.user && run.user !== user) return sendError(res, 403, 'forbidden');
+    if (run.status !== 'running') return sendError(res, 409, `run is ${run.status}`);
     run.status = 'suspended';
     await ctx.store.save();
     ctx.metrics.inc('cancels');
@@ -273,13 +294,13 @@ async function route(req, res, url, ctx) {
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'checkpoints' && method === 'GET') {
     const run = ctx.store.getRun(parts[2]);
-    if (!run) return sendJson(res, 404, { error: 'run not found' });
-    if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
+    if (!run) return sendError(res, 404, 'run not found');
+    if (run.user && run.user !== user) return sendError(res, 403, 'forbidden');
     sendJson(res, 200, { run, checkpoints: ctx.store.listCheckpoints(parts[2]) }); return true;
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'events' && method === 'GET') {
     const run = ctx.store.getRun(parts[2]);
-    if (!run) return sendJson(res, 404, { error: 'not found' });
+    if (!run) return sendError(res, 404, 'not found');
     sendJson(res, 200, { run, events: ctx.store.listEvents(parts[2]) }); return true;
   }
   if (parts.length === 4 && parts[1] === 'runs' && parts[3] === 'resume' && method === 'POST') {
@@ -348,7 +369,7 @@ async function route(req, res, url, ctx) {
     try {
       sendJson(res, 200, ctx.wants.claim(parts[2], { by: 'citizen' }));
     } catch (e) {
-      sendJson(res, 409, { error: e.message });
+      sendError(res, 409, e.message);
     }
     return true;
   }
@@ -357,7 +378,7 @@ async function route(req, res, url, ctx) {
     try {
       sendJson(res, 200, ctx.wants.fulfill(parts[2], { by: body.agent ?? 'citizen', result: body.result ?? '' }));
     } catch (e) {
-      sendJson(res, 409, { error: e.message });
+      sendError(res, 409, e.message);
     }
     return true;
   }
@@ -365,7 +386,7 @@ async function route(req, res, url, ctx) {
     try {
       sendJson(res, 200, ctx.wants.cancel(parts[2], { user }));
     } catch (e) {
-      sendJson(res, 409, { error: e.message });
+      sendError(res, 409, e.message);
     }
     return true;
   }
@@ -438,7 +459,7 @@ async function route(req, res, url, ctx) {
     }
     if (method === 'POST') {
       const body = await readJson(req);
-      if (typeof body.text !== 'string' || !body.text.trim()) return sendJson(res, 422, { error: 'text required' });
+      if (typeof body.text !== 'string' || !body.text.trim()) return sendError(res, 422, 'text required');
       const m = await ctx.memory.add(body.text.trim(), body.tags ?? [], user);
       sendJson(res, 201, m); return true;
     }
@@ -446,7 +467,7 @@ async function route(req, res, url, ctx) {
 
   if (parts.length === 2 && parts[1] === 'feedback' && method === 'POST') {
     const body = await readJson(req);
-    if (typeof body.text !== 'string' || !body.text.trim()) return sendJson(res, 422, { error: 'text required' });
+    if (typeof body.text !== 'string' || !body.text.trim()) return sendError(res, 422, 'text required');
     const m = await ctx.memory.add(`[feedback] ${body.text.trim()}`, body.tags ?? [], user);
     sendJson(res, 201, m); return true;
   }
@@ -486,15 +507,15 @@ async function handleChat(req, res, conversationId, ctx, user) {
 // cached outputs as events.
 async function handleResume(req, res, runId, ctx, user) {
   const run = ctx.store.getRun(runId);
-  if (!run) return sendJson(res, 404, { error: 'run not found' });
+  if (!run) return sendError(res, 404, 'run not found');
   const conversation = ctx.store.getConversation(run.conversationId);
-  if (!conversation) return sendJson(res, 404, { error: 'conversation not found' });
-  if (run.user && run.user !== user) return sendJson(res, 403, { error: 'forbidden' });
-  if (run.status === 'running') return sendJson(res, 409, { error: 'run is still in progress' });
+  if (!conversation) return sendError(res, 404, 'conversation not found');
+  if (run.user && run.user !== user) return sendError(res, 403, 'forbidden');
+  if (run.status === 'running') return sendError(res, 409, 'run is still in progress');
 
   // Recover the original request from the conversation's last user message.
   const lastUser = [...conversation.messages].reverse().find((m) => m.role === 'user');
-  if (!lastUser?.content) return sendJson(res, 422, { error: 'no user message to resume' });
+  if (!lastUser?.content) return sendError(res, 422, 'no user message to resume');
 
   ctx.metrics.inc('chats');
   // Reset the run to running; prior events/checkpoints are preserved.
@@ -513,6 +534,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
 
   let closed = false;
   let suspended = false;
+  let lastPhase = 'queued';
   req.on('close', () => { closed = true; });
   // SSE event IDs (#3): each event carries a monotonic `id:` so a reconnecting
   // client can send Last-Event-ID and receive only the events it missed.
@@ -526,6 +548,16 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
   emit('run_id', { runId, schemaVersion: SSE_SCHEMA_VERSION });
   ctx.writers.set(runId, emit);
 
+  // Heartbeat (DUR-030): the orchestrator persists a heartbeat per event; the
+  // SSE stream also emits one every 15s so a client can distinguish a long
+  // model call from a dead connection.
+  const heartbeat = setInterval(() => {
+    const at = Date.now();
+    ctx.store.heartbeat?.(runId, { phase: lastPhase });
+    emit('heartbeat', { runId, phase: lastPhase, at });
+  }, 15_000);
+  heartbeat.unref?.();
+
   // Replay missed events on reconnect (#3). The store already has every event
   // with its seq; a client that reconnects with Last-Event-ID gets the gap.
   const lastEventId = Number(req.headers['last-event-id']);
@@ -537,6 +569,7 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
 
   try {
     for await (const evt of orchestrate({ message, provider, user, store: ctx.store, conversationId, runId, signal: ac.signal, resume })) {
+      if (evt.phase) lastPhase = evt.phase;
       emit(evt.type, evt);
       if (evt.type === 'suspended') suspended = true;
       if (evt.type === 'security_decision' && (evt.decision.verdict === 'deny')) ctx.metrics.inc('securityDenials');
@@ -550,8 +583,13 @@ async function streamRun(req, res, { ctx, user, conversationId, runId, message, 
       await ctx.store.finishRun(runId, { status });
       emit(status === 'interrupted' ? 'interrupted' : 'cancelled', { runId, status });
     }
-    else { console.error('[chat]', err); await ctx.store.finishRun(runId, { status: 'error', error: err.message }); emit('error', { message: err.message }); }
+    else {
+      console.error('[chat]', err);
+      await ctx.store.finishRun(runId, { status: 'error', error: err.message });
+      emit('error', { message: err.message, failure: classifyFailure(err) });
+    }
   } finally {
+    clearInterval(heartbeat);
     ctx.writers.delete(runId);
     ctx.aborts.delete(runId);
     if (!closed) { try { res.end(); } catch {} }
@@ -562,6 +600,11 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const { server, store, ctx } = createApp();
   await store.load();
+  // Crash detection (DUR-031): nothing can still be running in a fresh process,
+  // so any run left as `running` is interrupted. Mark it honestly instead of
+  // leaving clients to wait on a stream that will never resume.
+  const interrupted = await recoverInterruptedRuns(store, { staleAfterMs: 0 });
+  if (interrupted.length) console.log(`[server] marked ${interrupted.length} orphaned run(s) interrupted`);
   server.listen(PORT, HOST, () => console.log(`Agent Village v3 listening on http://${HOST}:${PORT}`));
 
   // Graceful shutdown (#4): stop accepting new runs, abort in-flight runs,
