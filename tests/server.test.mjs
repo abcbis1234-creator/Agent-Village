@@ -44,16 +44,40 @@ test('healthz liveness and readyz readiness', async () => {
   } finally { server.close(); }
 });
 
-test('error responses carry stable codes', async () => {
+test('error responses use RFC 9457 problem details', async () => {
   const { server, base } = await start();
   try {
     const r = await fetch(`${base}/api/nope`);
     assert.equal(r.status, 404);
+    assert.equal(r.headers.get('content-type'), 'application/problem+json; charset=utf-8');
     const body = await r.json();
+    assert.equal(body.type, 'about:blank');
+    assert.equal(body.title, 'Not Found');
+    assert.equal(body.status, 404);
+    assert.equal(body.detail, 'not found');
+    assert.equal(body.instance, '/api/nope');
     assert.equal(body.code, 'NOT_FOUND');
+    assert.equal(body.error, 'not found');
     // Method not allowed on a known path.
     const r2 = await fetch(`${base}/api/health`, { method: 'POST' });
     assert.ok(r2.status === 404 || r2.status === 405);
+    if (r2.status === 404) assert.equal((await r2.json()).code, 'NOT_FOUND');
+  } finally { server.close(); }
+});
+
+test('validation errors use problem details and keep the legacy error field', async () => {
+  const { server, base } = await start();
+  try {
+    const r = await fetch(`${base}/api/knowledge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '' }),
+    });
+    assert.equal(r.status, 422);
+    assert.equal(r.headers.get('content-type'), 'application/problem+json; charset=utf-8');
+    const body = await r.json();
+    assert.equal(body.status, 422);
+    assert.equal(body.title, 'Unprocessable Content');
+    assert.equal(body.error, 'text required');
+    assert.equal(body.instance, '/api/knowledge');
   } finally { server.close(); }
 });
 
