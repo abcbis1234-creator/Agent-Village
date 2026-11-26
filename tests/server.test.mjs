@@ -23,6 +23,9 @@ test('index serves with hardened headers', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('x-frame-options'), 'DENY');
     assert.match(res.headers.get('content-security-policy') ?? '', /default-src 'self'/);
+    const html = await res.text();
+    assert.match(html, /id="timeline-list"/);
+    assert.match(html, /id="budget-fill"/);
   } finally { server.close(); }
 });
 test('health endpoint', async () => {
