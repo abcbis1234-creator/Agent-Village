@@ -52,8 +52,8 @@ Disclose responsibly. Open an issue or contact the maintainer directly. Never po
  Browser ──HTTP──▶ server.mjs ──▶ lib/security (L1+L2 gate)
    │                  │                    │
    │            lib/orchestrator        lib/tools (calculator, clock,
-   │             (8-role pipeline)       remember, recall, sd_generate,
-   │                  │                  external_http)
+   │             (8-role pipeline)       remember, recall, storyboard,
+   │                  │                  sd_generate, external_http)
    │            lib/llm (providers)  ◀── server-only credentials
    │            lib/store (JSON)     ◀── atomic writes, audit hash chain
 ```

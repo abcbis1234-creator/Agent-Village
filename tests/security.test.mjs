@@ -17,6 +17,15 @@ test('denies unexpected args', async () => {
   const d = await s.gate({ tool: 'calculator', args: { expression: '1+1', evil: 'x' } });
   assert.equal(d.verdict, VERDICTS.DENY);
 });
+test('storyboard is safe but bounded', async () => {
+  const s = new SecurityReviewer({});
+  const ok = await s.gate({ tool: 'storyboard', args: { brief: 'A 30 second promo for a coffee shop', durationSeconds: 30 } });
+  assert.equal(ok.verdict, VERDICTS.ALLOW);
+  const long = await s.gate({ tool: 'storyboard', args: { brief: 'x'.repeat(801) } });
+  assert.equal(long.verdict, VERDICTS.DENY);
+  assert.match(long.reasons.join(' '), /brief too long/);
+});
+
 test('guarded needs capability', async () => {
   const s = new SecurityReviewer({});
   const d = await s.gate({ tool: 'sd_generate', args: { prompt: 'cat' } });

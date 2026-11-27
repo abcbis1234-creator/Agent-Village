@@ -394,3 +394,79 @@ test('world stream does not drop events that share a timestamp', async () => {
     ac.abort();
   } finally { server.close(); }
 });
+
+test('director formats endpoint advertises presets and exports', async () => {
+  const { server, base } = await start();
+  try {
+    const res = await fetch(`${base}/api/director/formats`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.formats.some((format) => format.id === 'srt' && format.extension === 'srt'));
+    assert.ok(body.formats.some((format) => format.id === 'otio'));
+    assert.ok(body.platforms.some((platform) => platform.id === 'tiktok' && platform.aspect === '9:16'));
+    assert.ok(body.aspects.includes('9:16'));
+    assert.ok(body.tones.includes('premium'));
+    assert.deepEqual(body.fps, [24, 25, 30, 60]);
+  } finally { server.close(); }
+});
+
+test('director plan endpoint is deterministic and returns usable exports', async () => {
+  const { server, base } = await start();
+  try {
+    const request = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brief: 'A 30 second premium promo for my coffee shop', durationSeconds: 30, scenes: 6, seed: 'server-test' }),
+    };
+    const first = await (await fetch(`${base}/api/director/plan`, request)).json();
+    const second = await (await fetch(`${base}/api/director/plan`, request)).json();
+    assert.deepEqual(first.plan, second.plan);
+    assert.equal(first.plan.durationMs, 30_000);
+    assert.equal(first.plan.scenes.length, 6);
+    assert.match(first.exports.srt, /00:00:00,000 --> /);
+    assert.match(first.exports.fcpxml, /<fcpxml version="1.9">/);
+    assert.equal(JSON.parse(first.exports.otio).OTIO_SCHEMA, 'Timeline.1');
+  } finally { server.close(); }
+});
+
+test('director export endpoint returns a download descriptor', async () => {
+  const { server, base } = await start();
+  try {
+    const planRes = await fetch(`${base}/api/director/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: 'srt', plan: { brief: 'A product teaser', scenes: [{ role: 'hook', durationMs: 2000 }, { role: 'cta', durationMs: 3000 }] } }),
+    });
+    assert.equal(planRes.status, 200);
+    const data = await planRes.json();
+    assert.equal(data.format, 'srt');
+    assert.equal(data.contentType, 'application/x-subrip; charset=utf-8');
+    assert.match(data.filename, /\.srt$/);
+    assert.match(data.body, /-->/);
+  } finally { server.close(); }
+});
+
+test('director rejects invalid plans with problem details', async () => {
+  const { server, base } = await start();
+  try {
+    const res = await fetch(`${base}/api/director/plan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ brief: '' }),
+    });
+    assert.equal(res.status, 422);
+    assert.equal(res.headers.get('content-type'), 'application/problem+json; charset=utf-8');
+    const body = await res.json();
+    assert.match(body.detail, /brief/);
+  } finally { server.close(); }
+});
+
+test('director page is served with the same hardened headers', async () => {
+  const { server, base } = await start();
+  try {
+    const res = await fetch(`${base}/director.html`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /text\/html/);
+    assert.equal(res.headers.get('x-frame-options'), 'DENY');
+    assert.match(res.headers.get('content-security-policy') ?? '', /default-src 'self'/);
+    assert.match(await res.text(), /id="scene-grid"/);
+  } finally { server.close(); }
+});
