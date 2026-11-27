@@ -69,8 +69,12 @@ test('phase gates expose explicit entry and exit criteria', () => {
   const bad = checkPhaseGate('plan', 'entry', {});
   assert.equal(bad.ok, false);
   assert.match(bad.reasons.join(' '), /scout report/);
-  const good = checkPhaseGate('plan', 'exit', { plan: { steps: [] } });
+  const good = checkPhaseGate('plan', 'exit', { plan: { steps: [], planText: 'No tools are needed for this answer.' } });
   assert.equal(good.ok, true);
+  // A planner that threw produced neither text nor steps; it must not advance.
+  const empty = checkPhaseGate('plan', 'exit', { plan: { steps: [], planText: '' } });
+  assert.equal(empty.ok, false);
+  assert.match(empty.reasons.join(' '), /no plan text/);
 });
 
 test('orchestrate refuses to advance past a failed phase gate', async () => {

@@ -13,3 +13,13 @@ test('rejects when any lens fails', async () => {
   assert.ok(['accept', 'reject'].includes(v.overall));
   assert.ok(Array.isArray(v.findings));
 });
+
+test('propagates AbortError instead of treating lenses as low confidence', async () => {
+  const c = new Critic({ independentProviders: ['mock'] });
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(
+    () => c.review({ artifact: 'x', request: 'y', builderProvider: 'mock', signal: ac.signal }),
+    (err) => err.name === 'AbortError',
+  );
+});

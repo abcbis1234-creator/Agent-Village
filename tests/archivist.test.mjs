@@ -45,3 +45,12 @@ test('correction supersedes instead of overwriting', async () => {
   assert.notEqual(corrected.id, m.id);
   assert.equal(m.supersededBy, 'corrected');
 });
+
+test('stats can be scoped to one user', async () => {
+  const store = fakeStore();
+  const a = new Archivist(store);
+  await a.record({ text: 'alice remembers the sky', user: 'alice' });
+  await a.record({ text: 'bob remembers the sea', user: 'bob' });
+  assert.equal(a.stats({ user: 'alice' }).totalMemories, 1);
+  assert.equal(a.stats().totalMemories, 2);
+});

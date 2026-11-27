@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { VectorMemory, bm25Scores, tokenize } from '../lib/memory.mjs';
+import { VectorMemory, bm25Scores, tokenize, cosine } from '../lib/memory.mjs';
 import { Archivist } from '../lib/archivist.mjs';
 
 function fakeStore() {
@@ -55,4 +55,21 @@ test('memory search stays user-scoped', async () => {
   await memory.add('Bob public project', [], 'bob');
   const hits = memory.search('Zephyr', { user: 'bob' });
   assert.equal(hits.length, 0);
+});
+
+
+test('cosine treats missing or mismatched legacy vectors as zero similarity', () => {
+  assert.equal(cosine(Float32Array.from([1, 0]), undefined), 0);
+  assert.equal(cosine(undefined, Float32Array.from([1, 0])), 0);
+  assert.equal(cosine(Float32Array.from([1, 0]), Float32Array.from([1, 0, 0])), 0);
+});
+
+test('vector add applies the memory-write guard used by the archivist', async () => {
+  const memory = new VectorMemory(fakeStore());
+  await assert.rejects(
+    () => memory.add('my api_key: sk-abcdefghijklmnopqrst', [], 'alice'),
+    (err) => err.code === 'UNSAFE_MEMORY' && err.status === 422,
+  );
+  const safe = await memory.add('Zephyr ships next spring', [], 'alice');
+  assert.match(safe.text, /Zephyr/);
 });
