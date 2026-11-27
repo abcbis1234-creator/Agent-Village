@@ -5,15 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server.mjs';
 import { Store } from '../lib/store.mjs';
+import { verifyExport } from '../lib/signature.mjs';
 
 async function start() {
   const dir = await mkdtemp(join(tmpdir(), 'av-'));
   const store = new Store(join(dir, 'state.json'));
   await store.load();
-  const { server } = createApp({ store });
+  const { server, ctx } = createApp({ store });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address();
-  return { server, base: `http://127.0.0.1:${port}` };
+  return { server, store, ctx, base: `http://127.0.0.1:${port}` };
 }
 
 test('index serves with hardened headers', async () => {
@@ -246,4 +247,150 @@ test('drain flush persists queued writes', async () => {
   const s2 = new Store(join(dir, 'state.json'));
   await s2.load();
   assert.equal(s2.data.wants.length, 5);
+});
+
+
+test('run reads and cancellation are scoped to the owning user', async () => {
+  const { server, base } = await start();
+  try {
+    const alice = { 'Content-Type': 'application/json', 'x-village-user': 'alice' };
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers: alice, body: '{}' })).json();
+    const text = await (await fetch(`${base}/api/conversations/${c.id}/chat`, {
+      method: 'POST', headers: alice, body: JSON.stringify({ message: 'what is 2+2?', provider: 'mock' }),
+    })).text();
+    const runId = text.match(/event: run_id\ndata: {"runId":"([^"]+)"/)[1];
+
+    const bob = { 'x-village-user': 'bob' };
+    for (const [path, init] of [
+      [`/api/runs/${runId}/events`, { headers: bob }],
+      [`/api/runs/${runId}/export`, { headers: bob }],
+      [`/api/runs/${runId}/cancel`, { method: 'POST', headers: bob }],
+    ]) {
+      const r = await fetch(`${base}${path}`, init);
+      assert.equal(r.status, 403, `${path} must not leak another user's run`);
+    }
+    const own = await fetch(`${base}/api/runs/${runId}/events`, { headers: alice });
+    assert.equal(own.status, 200);
+    assert.ok((await own.json()).events.length > 0);
+  } finally { server.close(); }
+});
+
+test('SSE replay with Last-Event-ID resumes above the cursor in order', async () => {
+  const { server, base } = await start();
+  try {
+    const headers = { 'Content-Type': 'application/json', 'x-village-user': 'alice' };
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers, body: '{}' })).json();
+    const first = await (await fetch(`${base}/api/conversations/${c.id}/chat`, {
+      method: 'POST', headers, body: JSON.stringify({ message: 'what is 2+2?', provider: 'mock' }),
+    })).text();
+    const runId = first.match(/event: run_id\ndata: {"runId":"([^"]+)"/)[1];
+    const before = await (await fetch(`${base}/api/runs/${runId}/events`, { headers })).json();
+    assert.ok(before.events.length >= 3);
+
+    const resumed = await (await fetch(`${base}/api/runs/${runId}/resume`, {
+      method: 'POST', headers: { ...headers, 'Last-Event-ID': '2' },
+    })).text();
+    const ids = [...resumed.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
+    assert.ok(ids.length > 0, 'replay should emit persisted events');
+    assert.ok(ids.every((id) => id > 2), `replayed ids must exceed the cursor: ${ids.join(',')}`);
+    assert.ok(ids.every((id, i) => i === 0 || id > ids[i - 1]), `ids must increase: ${ids.join(',')}`);
+    // The live connection marker follows the replay and carries no id.
+    assert.match(resumed, /event: run_id\ndata: {"runId":"[^"]+","schemaVersion":1,"resumedFrom":2}/);
+  } finally { server.close(); }
+});
+
+test('JSON bodies must be objects and structured +json media types are accepted', async () => {
+  const { server, base } = await start();
+  try {
+    const nullBody = await fetch(`${base}/api/wants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'null',
+    });
+    assert.equal(nullBody.status, 400);
+
+    const arrayBody = await fetch(`${base}/api/wants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '[]',
+    });
+    assert.equal(arrayBody.status, 400);
+
+    const suffix = await fetch(`${base}/api/wants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify({ text: 'fix the bridge' }),
+    });
+    assert.equal(suffix.status, 201);
+
+    const jsonp = await fetch(`${base}/api/wants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/jsonp' }, body: '{}',
+    });
+    assert.equal(jsonp.status, 415);
+  } finally { server.close(); }
+});
+
+test('export refuses to sign without a configured secret, then verifies with one', async () => {
+  const previous = process.env.VILLAGE_EXPORT_SECRET;
+  delete process.env.VILLAGE_EXPORT_SECRET;
+  const { server, base } = await start();
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers, body: '{}' })).json();
+    const text = await (await fetch(`${base}/api/conversations/${c.id}/chat`, {
+      method: 'POST', headers, body: JSON.stringify({ message: 'what is 2+2?', provider: 'mock' }),
+    })).text();
+    const runId = text.match(/event: run_id\ndata: {"runId":"([^"]+)"/)[1];
+
+    const unconfigured = await fetch(`${base}/api/runs/${runId}/export`);
+    assert.equal(unconfigured.status, 503);
+
+    process.env.VILLAGE_EXPORT_SECRET = 'test-export-secret';
+    const ok = await fetch(`${base}/api/runs/${runId}/export`);
+    assert.equal(ok.status, 200);
+    const signed = await ok.json();
+    assert.equal(signed.alg, 'HS256');
+    assert.equal(verifyExport(signed), true);
+    assert.equal(verifyExport({ body: signed.body, sig: '00' }), false);
+  } finally {
+    server.close();
+    if (previous === undefined) delete process.env.VILLAGE_EXPORT_SECRET;
+    else process.env.VILLAGE_EXPORT_SECRET = previous;
+  }
+});
+
+
+test('owner cancellation aborts the tracked run', async () => {
+  const { server, store, ctx, base } = await start();
+  try {
+    const headers = { 'Content-Type': 'application/json', 'x-village-user': 'alice' };
+    const c = await (await fetch(`${base}/api/conversations`, { method: 'POST', headers, body: '{}' })).json();
+    const run = store.createRun({ conversationId: c.id, provider: 'mock', user: 'alice' });
+    const ac = new AbortController();
+    ctx.aborts.set(run.id, ac);
+    const res = await fetch(`${base}/api/runs/${run.id}/cancel`, { method: 'POST', headers: { 'x-village-user': 'alice' } });
+    assert.equal(res.status, 200);
+    assert.equal(ac.signal.aborted, true);
+    ctx.aborts.delete(run.id); // the stream's finally block does this on abort
+    // A finished/untracked run cannot be cancelled again.
+    const again = await fetch(`${base}/api/runs/${run.id}/cancel`, { method: 'POST', headers: { 'x-village-user': 'alice' } });
+    assert.equal(again.status, 409);
+  } finally { server.close(); }
+});
+
+test('world stream does not drop events that share a timestamp', async () => {
+  const { server, store, base } = await start();
+  try {
+    const ts = Date.now();
+    store.data.world.push({ id: 'w1', type: 'world_event', ts, description: 'first event' });
+    store.data.world.push({ id: 'w2', type: 'world_event', ts, description: 'second event' });
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/world/stream`, { signal: ac.signal });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (!(buf.includes('first event') && buf.includes('second event'))) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+    }
+    assert.match(buf, /first event/);
+    assert.match(buf, /second event/);
+    ac.abort();
+  } finally { server.close(); }
 });

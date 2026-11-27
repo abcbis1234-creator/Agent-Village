@@ -47,7 +47,7 @@ while (true) {
     else if (event === 'security_decision') { const v = data.decision.verdict; const c = v === 'deny' ? 31 : v === 'require_approval' ? 33 : 32; process.stdout.write(`  \x1b[${c}m🔒 ${data.decision.tool}: ${v}\x1b[0m\n`); }
     else if (event === 'tool_result') process.stdout.write(`  \x1b[32m→ ${data.tool}: ${String(data.result).slice(0, 120)}\x1b[0m\n`);
     else if (event === 'tool_error') process.stdout.write(`  \x1b[31m✗ ${data.tool}: ${data.error}\x1b[0m\n`);
-    else if (event === 'verification' && data.findings.length) process.stdout.write(`  \x1b[33m🛡️ ${data.severity}: ${data.findings.map((f) => f.kind).join(',')}\x1b[0m\n`);
+    else if (event === 'verification' && data.findings?.length) process.stdout.write(`  \x1b[33m🛡️ ${data.severity}: ${data.findings.map((f) => f.kind).join(',')}\x1b[0m\n`);
     else if (event === 'message_start') process.stdout.write(`\x1b[35m${data.agentId}>\x1b[0m `);
     else if (event === 'chunk') process.stdout.write(data.content);
     else if (event === 'message_end') process.stdout.write('\n');

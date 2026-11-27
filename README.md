@@ -94,6 +94,10 @@ point, an effort estimate, and a source. Start with the
 Set `VILLAGE_PROVIDER` to `mock`, `openai`, `ollama`, or `anthropic`. Without
 configuration, the server defaults to `mock` (deterministic, no network).
 
+Set `VILLAGE_API_TOKEN` to require `Authorization: Bearer <token>` on `/api/*`;
+query-string tokens are not accepted. Signed run exports require
+`VILLAGE_EXPORT_SECRET` and return 503 when it is missing.
+
 ## Security
 
 - Path traversal blocked (resolved containment + stat check)

@@ -15,7 +15,7 @@ const setStatus = (t) => (els.status.textContent = t ?? '');
 async function api(path, opts) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${res.status}`);
   return data;
 }
 
@@ -40,7 +40,7 @@ function renderConversations() {
     btn.type = 'button';
     btn.className = 'conv-btn' + (c.id === state.conversationId ? ' active' : '');
     btn.textContent = c.title;
-    btn.addEventListener('click', () => openConversation(c.id));
+    btn.addEventListener('click', () => openConversation(c.id).catch((e) => setStatus(e.message)));
     li.append(btn); els.conversations.append(li);
   }
 }
@@ -203,11 +203,15 @@ async function tick() {
 }
 
 async function newConversation() {
+  if (state.streaming) { setStatus('Wait for the current run to finish.'); return; }
   const c = await api('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: 'planner' }) });
   state.conversations.unshift(c); renderConversations(); await openConversation(c.id);
 }
 
 async function openConversation(id) {
+  // Switching mid-stream would append the active run's events to a different
+  // transcript, so keep the user on the conversation that is streaming.
+  if (state.streaming && id !== state.conversationId) { setStatus('Wait for the current run to finish.'); return; }
   state.conversationId = id;
   const c = await api(`/api/conversations/${id}`);
   els.title.textContent = c.title;
@@ -336,6 +340,13 @@ async function sendMessage(message) {
       }
       else if (event === 'suspended') {
         addTimeline('warn', `Suspended at ${data.phase}`, 'resume to continue');
+        setStatus('Run suspended. Resume to continue.');
+      }
+      else if (event === 'cancelled') {
+        addTimeline('warn', 'Run cancelled', 'the client or an operator stopped it');
+      }
+      else if (event === 'interrupted') {
+        addTimeline('error', 'Run interrupted', 'the server restarted before it finished');
       }
       else if (event === 'phase_gate_failed') {
         addTimeline('error', `Gate failed · ${data.phase}`, (data.reasons ?? []).join('; '));
@@ -355,7 +366,8 @@ async function sendMessage(message) {
   } catch (err) {
     els.transcript.append(bubble({ role: 'agent', agentId: 'system', content: `Error: ${err.message}` }));
   } finally {
-    state.streaming = false; els.phase.hidden = true; scrollBottom();
+    state.streaming = false; state.streamEl = null; state.buffer = '';
+    els.phase.hidden = true; scrollBottom();
     loadConversations().catch(() => {});
   }
 }
@@ -368,7 +380,7 @@ function renderPaletteList(q) {
   for (const c of state.conversations.filter((c) => c.title.toLowerCase().includes(query))) {
     const li = document.createElement('li');
     const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = c.title;
-    btn.addEventListener('click', () => { closePalette(); openConversation(c.id); });
+    btn.addEventListener('click', () => { closePalette(); openConversation(c.id).catch((e) => setStatus(e.message)); });
     li.append(btn); els.paletteList.append(li);
   }
 }
