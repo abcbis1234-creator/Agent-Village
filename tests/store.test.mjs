@@ -140,3 +140,64 @@ test('audit chain survives save/load round-trip', async () => {
   assert.equal(v.ok, true);
   assert.equal(v.count, 2);
 });
+
+test('corrupt store errors are marked recoverable and preserve a backup', async () => {
+  const path = await tmpPath();
+  await writeFile(path, '{ still not json');
+  const s = new Store(path);
+  await assert.rejects(() => s.load(), (err) => err.code === 'STORE_CORRUPT');
+  const files = await import('node:fs/promises').then((fs) => fs.readdir(path.replace(/state\.json$/, '')));
+  assert.ok(files.some((f) => f.startsWith('state.json.corrupt.')), `backup missing: ${files.join(',')}`);
+});
+
+test('reflection requests coalesce per user and complete once', async () => {
+  const s = new Store(await tmpPath());
+  await s.load();
+  const a = await s.queueReflection('alice');
+  const again = await s.queueReflection('alice');
+  const b = await s.queueReflection('bob');
+  assert.equal(a.id, again.id);
+  assert.notEqual(a.id, b.id);
+  assert.equal(s.listReflections({ user: 'alice', status: 'pending' }).length, 1);
+  assert.equal(await s.completeReflection('alice'), 1);
+  assert.equal(s.listReflections({ user: 'alice', status: 'pending' }).length, 0);
+  assert.equal(await s.completeReflection('alice'), 0);
+});
+
+test('legacy records without a user remain visible to anon', async () => {
+  const path = await tmpPath();
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    conversations: { c1: { id: 'c1', title: 'legacy', createdAt: 1, messages: [] } },
+    memories: [{ id: 'm1', text: 'legacy memory' }],
+    runs: {}, events: {}, checkpoints: {}, capabilities: [], wants: [], world: [], audit: [],
+  }));
+  const s = new Store(path);
+  await s.load();
+  assert.equal(s.listConversations('anon').length, 1);
+  assert.equal(s.listMemories('anon').length, 1);
+  assert.equal(s.listConversations('someone-else').length, 0);
+});
+
+test('finishRun clears a stale error when a run succeeds or resumes', async () => {
+  const s = new Store(await tmpPath());
+  await s.load();
+  const run = s.createRun({ conversationId: 'c1', provider: 'mock', mission: 'do work' });
+  await s.finishRun(run.id, { status: 'error', error: 'boom' });
+  assert.equal(s.getRun(run.id).error, 'boom');
+  run.status = 'running';
+  await s.finishRun(run.id, { status: 'ok' });
+  assert.equal(s.getRun(run.id).error, undefined);
+  assert.equal(s.getRun(run.id).mission, 'do work');
+});
+
+test('listRuns is scoped and newest-first', async () => {
+  const s = new Store(await tmpPath());
+  await s.load();
+  const a = s.createRun({ conversationId: 'c1', provider: 'mock', user: 'alice' });
+  const b = s.createRun({ conversationId: 'c2', provider: 'mock', user: 'bob' });
+  a.createdAt = 1000; b.createdAt = 2000;
+  assert.deepEqual(s.listRuns({ user: 'alice' }).map((r) => r.id), [a.id]);
+  assert.deepEqual(s.listRuns().map((r) => r.id), [b.id, a.id]);
+  assert.deepEqual(s.listRuns({ sinceMs: 1500 }).map((r) => r.id), [b.id]);
+});
