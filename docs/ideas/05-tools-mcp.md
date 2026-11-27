@@ -2,7 +2,7 @@
 
 Tools are the only way a run affects the world, so this category covers capability
 design, execution guards, and the connector surface. Today there are five tools
-(calculator, clock, remember, recall, sd_generate) and a deterministic L1 gate.
+(calculator, clock, remember, recall, storyboard, sd_generate) and a deterministic L1 gate.
 
 | ID | Idea | What it adds | Where | Effort | Source |
 |---|---|---|---|---|---|

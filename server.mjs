@@ -18,6 +18,7 @@ import { GodMode } from './lib/godmode.mjs';
 import { Chronicle } from './lib/chronicle.mjs';
 import { Town } from './lib/town.mjs';
 import { redact, redactError } from './lib/redact.mjs';
+import { planProject, exportProject, buildExports, FORMATS, PLATFORMS, ASPECTS, TONE_NAMES, PACE_NAMES, FPS_VALUES } from './lib/director.mjs';
 import { route as routeModel, listAvailableModels } from './lib/routing/free-first.mjs';
 import { classifyFailure } from './lib/failures.mjs';
 
@@ -276,6 +277,41 @@ async function route(req, res, url, ctx) {
   if (parts.length === 2 && parts[1] === 'providers' && method === 'GET') { sendJson(res, 200, { providers: listProviders(), default: defaultProvider() }); return true; }
   if (parts.length === 3 && parts[1] === 'providers' && parts[2] === 'health' && method === 'GET') { sendJson(res, 200, { ...(await probeAllProviders({ force: true })), breakers: providerHealth() }); return true; }
   if (parts.length === 2 && parts[1] === 'agents' && method === 'GET') { sendJson(res, 200, { agents: publicAgents() }); return true; }
+  // Creative workbench: a deterministic, offline pre-production plan.
+  if (parts.length === 3 && parts[1] === 'director' && parts[2] === 'formats' && method === 'GET') {
+    sendJson(res, 200, {
+      formats: Object.entries(FORMATS).map(([id, meta]) => ({ id, ...meta })),
+      platforms: Object.entries(PLATFORMS).map(([id, data]) => ({ id, label: data.label, aspect: data.aspect, durationSeconds: data.durationSeconds })),
+      aspects: Object.keys(ASPECTS),
+      tones: TONE_NAMES,
+      paces: PACE_NAMES,
+      fps: FPS_VALUES,
+    });
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'director' && parts[2] === 'plan' && method === 'POST') {
+    const body = await readJson(req);
+    try {
+      const plan = planProject(body);
+      sendJson(res, 200, { plan, exports: buildExports(plan) });
+    } catch (e) {
+      const status = Number.isInteger(e?.status) ? e.status : 500;
+      if (status >= 500) console.error('[director]', redactError(e));
+      sendError(res, status, status >= 500 ? 'failed to build the plan' : e.message);
+    }
+    return true;
+  }
+  if (parts.length === 3 && parts[1] === 'director' && parts[2] === 'export' && method === 'POST') {
+    const body = await readJson(req, 256 * 1024);
+    try {
+      sendJson(res, 200, exportProject(body));
+    } catch (e) {
+      const status = Number.isInteger(e?.status) ? e.status : 500;
+      if (status >= 500) console.error('[director]', redactError(e));
+      sendError(res, status, status >= 500 ? 'failed to export the plan' : e.message);
+    }
+    return true;
+  }
   // Risk-aware model routing (#40): pick a cost/complexity tier for a task.
   if (parts.length === 2 && parts[1] === 'route' && method === 'POST') {
     const body = await readJson(req);

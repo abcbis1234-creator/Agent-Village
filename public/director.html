@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Director · Agent Village</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/director.css" />
+</head>
+<body class="director-page">
+  <div class="director-shell">
+    <aside class="director-controls">
+      <a class="back-link" href="/">← Agent Village</a>
+      <div class="brand director-brand">
+        <span class="logo">🎬</span>
+        <div>
+          <h1>Director</h1>
+          <p class="tag">Brief → storyboard → timeline → export</p>
+        </div>
+      </div>
+      <p class="director-intro">A deterministic creative workbench. Turn a brief into a shot list, editable multi-track timeline, captions, look, and NLE-ready files. No media is uploaded or fetched.</p>
+
+      <form id="plan-form" class="director-form">
+        <label class="field field-wide">
+          <span>Brief</span>
+          <textarea id="brief" name="brief" rows="5" maxlength="800" required placeholder="A 30 second premium promo for my coffee shop…"></textarea>
+        </label>
+
+        <div class="field-grid">
+          <label class="field">
+            <span>Platform</span>
+            <select id="platform" name="platform">
+              <option value="tiktok">TikTok</option>
+              <option value="reels">Instagram Reels</option>
+              <option value="shorts">YouTube Shorts</option>
+              <option value="youtube">YouTube</option>
+              <option value="linkedin">LinkedIn</option>
+              <option value="square">Square feed</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Aspect</span>
+            <select id="aspect" name="aspect">
+              <option value="">Native</option>
+              <option value="9:16">9:16 vertical</option>
+              <option value="16:9">16:9 landscape</option>
+              <option value="1:1">1:1 square</option>
+              <option value="4:5">4:5 portrait</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Duration (s)</span>
+            <input id="duration" name="duration" type="number" min="5" max="180" step="1" placeholder="auto" />
+          </label>
+          <label class="field">
+            <span>Scenes</span>
+            <input id="scene-input-count" name="scenes" type="number" min="3" max="12" step="1" placeholder="auto" />
+          </label>
+          <label class="field">
+            <span>Tone</span>
+            <select id="tone" name="tone">
+              <option value="">Auto</option>
+              <option value="energetic">Energetic</option>
+              <option value="calm">Calm</option>
+              <option value="premium">Premium</option>
+              <option value="playful">Playful</option>
+              <option value="documentary">Documentary</option>
+              <option value="technical">Technical</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Pace</span>
+            <select id="pace" name="pace">
+              <option value="">Auto</option>
+              <option value="slow">Slow</option>
+              <option value="medium">Medium</option>
+              <option value="fast">Fast</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Seed <em>optional, for reproducible plans</em></span>
+          <input id="seed" name="seed" type="text" maxlength="80" placeholder="e.g. spring-launch" />
+        </label>
+        <button id="generate" class="primary-btn" type="submit">Generate edit plan</button>
+      </form>
+
+      <div class="example-block">
+        <span class="field-label">Try a brief</span>
+        <div id="examples" class="examples">
+          <button type="button" data-brief="A 30 second premium promo for my coffee shop" data-platform="tiktok" data-tone="premium">Coffee shop</button>
+          <button type="button" data-brief="Make a calm 45-second reel about a skincare routine for busy mornings" data-platform="reels" data-tone="calm" data-duration="45">Skincare ritual</button>
+          <button type="button" data-brief="Launch video for a solar-powered backpack" data-platform="shorts" data-tone="energetic" data-duration="30">Solar backpack</button>
+          <button type="button" data-brief="A playful short for a cat café opening this weekend" data-platform="shorts" data-tone="playful" data-duration="20">Cat café</button>
+          <button type="button" data-brief="A technical explainer about how our vector database handles recall" data-platform="youtube" data-tone="technical" data-duration="60">Vector DB</button>
+        </div>
+      </div>
+
+      <p class="fine">Zero dependencies. The plan is generated locally on the server and never leaves it unless you download an export.</p>
+    </aside>
+
+    <main class="director-main">
+      <section id="empty" class="director-empty">
+        <span class="hero-mark">🎞️</span>
+        <h2>Direct the cut before you shoot it.</h2>
+        <p>Write a brief, choose a canvas, and get a shot-by-shot plan with timings, captions, palette, audio direction, and interchange files for the editor you already use.</p>
+        <div class="empty-grid">
+          <div><strong>Storyboard</strong><span>Role, shot, camera, lighting, action, B-roll, and generation prompts for every scene.</span></div>
+          <div><strong>Editable timeline</strong><span>Picture, captions, music, and SFX lanes with beat markers and exact durations.</span></div>
+          <div><strong>NLE exports</strong><span>SRT, WebVTT, CSV, CMX 3600 EDL, FCPXML, OpenTimelineIO, and a publish kit.</span></div>
+          <div><strong>Look &amp; sound</strong><span>Accessible palette, type pairing, BPM range, instrumentation, and mix notes.</span></div>
+        </div>
+      </section>
+
+      <div id="workspace" class="director-workspace" hidden>
+        <header class="director-head">
+          <div class="head-copy">
+            <p class="eyebrow">Director's plan</p>
+            <h2 id="plan-title">Untitled</h2>
+            <p id="plan-logline" class="logline"></p>
+          </div>
+          <div id="plan-pills" class="pills"></div>
+        </header>
+
+        <section class="hook-card" aria-label="Hook">
+          <div>
+            <span class="field-label">Hook</span>
+            <p id="hook-text" class="hook-text"></p>
+          </div>
+          <div class="hook-onscreen">
+            <span class="field-label">First caption</span>
+            <strong id="hook-onscreen"></strong>
+          </div>
+        </section>
+
+        <section class="panel timeline-panel" aria-label="Timeline">
+          <div class="panel-head">
+            <div>
+              <h3>Timeline</h3>
+              <p id="timeline-meta" class="panel-sub"></p>
+            </div>
+            <button id="refresh-preview" type="button" class="ghost-btn">Refresh preview</button>
+          </div>
+          <div id="timeline" class="timeline-board"></div>
+          <p id="edit-note" class="edit-note" hidden>Edits are local until you download an export. Downloads use the current plan.</p>
+        </section>
+
+        <section class="panel" aria-label="Storyboard">
+          <div class="panel-head">
+            <div>
+              <h3>Storyboard</h3>
+              <p class="panel-sub">Edit on-screen text, voiceover, or duration. Duration changes reflow the timeline automatically.</p>
+            </div>
+            <span id="scene-count" class="count-badge"></span>
+          </div>
+          <div id="scene-grid" class="scene-grid"></div>
+        </section>
+
+        <details class="panel detail-panel" open>
+          <summary><span>Look &amp; sound</span><span class="summary-hint">palette · type · audio · platform</span></summary>
+          <div class="detail-body">
+            <div class="look-grid">
+              <div>
+                <h4>Palette</h4>
+                <div id="palette" class="palette-grid"></div>
+                <p id="palette-note" class="small-copy"></p>
+              </div>
+              <div>
+                <h4>Typography</h4>
+                <div id="type-sample" class="type-sample"></div>
+                <p id="type-note" class="small-copy"></p>
+              </div>
+            </div>
+            <div class="look-grid">
+              <div>
+                <h4>Audio direction</h4>
+                <div id="audio-panel" class="audio-panel"></div>
+              </div>
+              <div>
+                <h4>Platform notes</h4>
+                <div id="platform-notes" class="notes-list"></div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="panel detail-panel">
+          <summary><span>Publish kit</span><span class="summary-hint">titles · description · hashtags · thumbnail</span></summary>
+          <div class="detail-body">
+            <div class="look-grid">
+              <div>
+                <h4>Title options</h4>
+                <ol id="titles" class="titles-list"></ol>
+                <h4>Thumbnail</h4>
+                <div id="thumbnail" class="thumbnail-card"></div>
+              </div>
+              <div>
+                <div class="copy-head">
+                  <h4>Description</h4>
+                  <button type="button" class="ghost-btn small" id="copy-description">Copy</button>
+                </div>
+                <pre id="description" class="description-box"></pre>
+                <div class="copy-head">
+                  <h4>Hashtags</h4>
+                  <button type="button" class="ghost-btn small" id="copy-hashtags">Copy</button>
+                </div>
+                <p id="hashtags" class="hashtags"></p>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="panel detail-panel">
+          <summary><span>Production</span><span class="summary-hint">checklist · B-roll · prompts</span></summary>
+          <div class="detail-body">
+            <div class="look-grid">
+              <div>
+                <h4>Checklist</h4>
+                <ul id="checklist" class="checklist"></ul>
+              </div>
+              <div>
+                <h4>B-roll &amp; props</h4>
+                <div id="production-tags" class="tag-list"></div>
+                <details class="nested-details">
+                  <summary>Asset manifest</summary>
+                  <div id="asset-manifest" class="asset-list"></div>
+                </details>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <section class="panel export-panel" aria-label="Exports">
+          <div class="panel-head">
+            <div>
+              <h3>Export</h3>
+              <p class="panel-sub">Download the current plan. Captions, cuts, and metadata stay in sync.</p>
+            </div>
+          </div>
+          <div class="export-grid">
+            <button type="button" class="export-btn" data-format="srt"><strong>SRT</strong><span>caption file</span></button>
+            <button type="button" class="export-btn" data-format="vtt"><strong>WebVTT</strong><span>web captions</span></button>
+            <button type="button" class="export-btn" data-format="edl"><strong>EDL</strong><span>CMX 3600 cuts</span></button>
+            <button type="button" class="export-btn" data-format="fcpxml"><strong>FCPXML</strong><span>Final Cut / DaVinci</span></button>
+            <button type="button" class="export-btn" data-format="otio"><strong>OTIO</strong><span>OpenTimelineIO</span></button>
+            <button type="button" class="export-btn" data-format="csv"><strong>CSV</strong><span>shot spreadsheet</span></button>
+            <button type="button" class="export-btn" data-format="markdown"><strong>Markdown</strong><span>full shot list</span></button>
+            <button type="button" class="export-btn" data-format="youtube"><strong>Publish kit</strong><span>titles + description</span></button>
+            <button type="button" class="export-btn" data-format="json"><strong>Project JSON</strong><span>everything, portable</span></button>
+          </div>
+          <p class="fine">SRT and WebVTT follow the voiceover; on-screen text is a separate design layer. EDL is cut-only, and transitions stay in the plan and Markdown/JSON exports. FCPXML and OTIO reference placeholder media, so relink your footage after import.</p>
+        </section>
+
+        <p id="director-status" class="director-status" role="status" aria-live="polite"></p>
+      </div>
+    </main>
+  </div>
+  <script src="/director.js" type="module"></script>
+</body>
+</html>

@@ -23,6 +23,23 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 | Cross-cutting | 📚 Archivist | Memory: recall/reflect/consolidate |
 | Cross-cutting | 🔒 Security Reviewer | Deterministic L1 tool gate |
 
+## Creative workbench
+
+[Director](/director.html) turns a plain-language brief into a deterministic
+pre-production plan: storyboard, multi-track timeline, caption cues, accessible
+palette, type pairing, audio direction, publish kit, production checklist, and
+NLE-ready exports. It runs offline, uses no media or npm dependencies, and is
+also available to the Planner as the safe `storyboard` tool.
+
+    npm start
+    open http://127.0.0.1:3000/director.html
+
+Exports: SRT, WebVTT, CSV, CMX 3600 EDL, FCPXML, OpenTimelineIO, Markdown,
+YouTube publish kit, and portable project JSON. FCPXML/OTIO reference placeholder
+media, so relink footage after import. Rendering and media compositing stay in
+the editor of your choice; see [the creative research notes](docs/CREATIVE_RESEARCH.md)
+for the ecosystem survey and roadmap.
+
 ## Reliability & safety upgrades
 
 - **JSON repair** (`lib/json.mjs`) — parser-driven extraction with depth/length limits and prototype-pollution guards. Planner, Scout, and Critic no longer depend on a greedy regex.
@@ -51,6 +68,9 @@ An 8-role multi-agent orchestrator. Zero npm dependencies. Runs on Node 20+.
 - `POST /api/memory/reflect` — synthesize episodic → semantic beliefs
 - `GET /api/memory/stats`
 - `GET/POST /api/knowledge` / `POST /api/feedback`
+- `GET /api/director/formats` — Director presets and export formats
+- `POST /api/director/plan` — brief → storyboard, timeline, captions, exports
+- `POST /api/director/export` — reflow an edited plan → download descriptor
 
 ### Town (OpenWants + Emergent City mechanics)
 
