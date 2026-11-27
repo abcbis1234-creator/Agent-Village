@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CircuitBreaker, chatStreamWithFallback, resetBreakers } from '../lib/llm.mjs';
+import { CircuitBreaker, chatStreamWithFallback, resetBreakers, probeProvider, probeAllProviders } from '../lib/llm.mjs';
+import { runScout } from '../lib/scout.mjs';
 
 test('circuit breaker opens, half-opens, and closes', () => {
   let t = 0;
@@ -54,4 +55,48 @@ test('fallback rejects when every provider fails', async () => {
       /* consume nothing */
     }
   }, /all providers failed/);
+});
+
+
+test('probeProvider cancels the unread response body', async () => {
+  const original = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = async () => ({ ok: true, status: 200, body: { cancel: async () => { cancelled = true; } } });
+  try {
+    const result = await probeProvider('openai', 1000);
+    assert.equal(result.ok, true);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('probeAllProviders caches briefly and force refreshes', async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, status: 200, body: { cancel: async () => {} } };
+  };
+  try {
+    await probeAllProviders({ force: true });
+    const afterFirst = calls;
+    assert.ok(afterFirst > 0);
+    await probeAllProviders();
+    assert.equal(calls, afterFirst, 'cached probe should not hit the network again');
+    await probeAllProviders({ force: true });
+    assert.ok(calls > afterFirst, 'force should bypass the cache');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+
+test('scout propagates AbortError instead of returning a fallback report', async () => {
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(
+    () => runScout({ message: 'find something', provider: 'mock', signal: ac.signal }),
+    (err) => err.name === 'AbortError',
+  );
 });

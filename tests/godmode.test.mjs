@@ -25,3 +25,11 @@ test('lists all god actions', () => {
   for (const action of GOD_ACTIONS) g.act({ action });
   assert.equal(g.list().length, GOD_ACTIONS.length);
 });
+
+test('clamps magnitude once so description and stored value agree', () => {
+  const g = new GodMode(fakeStore());
+  const e = g.act({ action: 'airdrop', target: 'town', magnitude: 99 });
+  assert.equal(e.magnitude, 5);
+  assert.match(e.description, /500 coins/);
+  assert.doesNotMatch(e.description, /9900/);
+});
