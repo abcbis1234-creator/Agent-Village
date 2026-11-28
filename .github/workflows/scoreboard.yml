@@ -1,0 +1,22 @@
+name: Phase 0 Scoreboard
+on:
+  pull_request:
+    paths:
+      - 'lib/evaluation/**'
+      - 'eval/fixtures/**'
+      - 'scripts/score*.mjs'
+      - 'tests/evaluation.test.mjs'
+      - 'package.json'
+      - '.github/workflows/scoreboard.yml'
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run lint
+      - run: npm test
+      - run: node --test tests/evaluation.test.mjs
+      - run: npm run score:selftest
