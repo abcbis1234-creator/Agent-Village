@@ -1,0 +1,32 @@
+[
+  {
+    "id": "cal-001",
+    "category": "calibration",
+    "prompt": "What is 6 multiplied by 7? Reply with only the number.",
+    "expected": "42",
+    "scoring": {
+      "type": "exact"
+    }
+  },
+  {
+    "id": "cal-002",
+    "category": "calibration",
+    "prompt": "Reply with exactly the word: READY",
+    "expected": "READY",
+    "scoring": {
+      "type": "exact"
+    }
+  },
+  {
+    "id": "cal-003",
+    "category": "calibration",
+    "prompt": "Return JSON only with keys ok and count, where ok is true and count is 3.",
+    "expected": {
+      "ok": true,
+      "count": 3
+    },
+    "scoring": {
+      "type": "json"
+    }
+  }
+]
