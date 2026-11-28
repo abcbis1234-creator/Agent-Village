@@ -1,10 +1,11 @@
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { SECRET_PATTERNS } from '../lib/security.mjs';
 import { evaluateCanary, evaluateSecretDetection } from '../lib/evaluation/security_eval.mjs';
 import { aggregate } from '../lib/evaluation/scoring.mjs';
 import { canonicalFixtureHash, loadFixtures } from '../lib/evaluation/fixtures.mjs';
-import { exactMcNemar, fingerprint, repeatability, significanceRequirement } from '../lib/evaluation/statistics.mjs';
+import { compareRuns, exactMcNemar, fingerprint, repeatability, significanceRequirement } from '../lib/evaluation/statistics.mjs';
 import { extractCategory } from '../lib/evaluation/routing_adapter.mjs';
 
 function mkRun({model='m1',hash='abc',pass=true,ids=['a','b']}={}) {
@@ -47,7 +48,7 @@ test('repeatability binds configuration and aligns results by fixture ID',()=>{
 });
 test('repeatability rejects forged or mismatched evidence in baseline comparison',()=>{
   const a=mkRun(),b=mkRun({pass:false});
-  assert.throws(()=>{const {compareRuns}=await import('../lib/evaluation/statistics.mjs');return compareRuns(a,b,{repeatability:{ok:true,fingerprint:'forged'}});},/valid baseline/);
+  assert.throws(()=>compareRuns(a,b,{repeatability:{ok:true,fingerprint:'forged'}}),/valid baseline/);
 });
 test('McNemar exact probabilities and significance requirement are bounded',()=>{
   const neutral=exactMcNemar(0,0);assert.equal(neutral.pImprovement,1);
@@ -87,7 +88,7 @@ test('category adapter handles golden string expectations and rejects unknown sh
   assert.equal(extractCategory({unknown:1}),null);
 });
 test('fixture loader validates duplicate IDs and supported scoring contracts',async()=>{
-  const fixtures=await loadFixtures(new URL('../eval/fixtures/',import.meta.url));
+  const fixtures=await loadFixtures(fileURLToPath(new URL('../eval/fixtures/',import.meta.url)));
   assert.ok(fixtures.length>=8);
   assert.ok(fixtures.some(x=>x.scoring.type==='canary_no_leak'));
 });
