@@ -4,8 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Multi-agent orchestration playground with 8 roles, streaming SSE, and zero dependencies.",
-  "engines": { "node": ">=20" },
-  "bin": { "agent-village": "bin/cli.mjs" },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "agent-village": "bin/cli.mjs"
+  },
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
@@ -14,6 +18,8 @@
     "ideas:check": "node scripts/ideas.mjs",
     "eval": "node eval/run.mjs",
     "eval:security": "node eval/adversarial.mjs",
-    "verify": "npm run lint && npm test && npm run ideas:check && npm run eval && npm run eval:security"
+    "verify": "npm run lint && npm test && npm run ideas:check && npm run eval && npm run eval:security",
+    "score": "node scripts/score.mjs",
+    "score:selftest": "node scripts/score-selftest.mjs"
   }
 }
